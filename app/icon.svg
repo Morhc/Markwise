@@ -1,0 +1,13 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- macOS-style rounded square: white background -->
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="#ffffff"/>
+  <!-- MW in a serif face, black -->
+  <text x="512" y="512"
+        font-family="Georgia, 'Times New Roman', 'Times', serif"
+        font-weight="700"
+        font-size="330"
+        letter-spacing="-6"
+        fill="#000000"
+        text-anchor="middle"
+        dominant-baseline="central">MW</text>
+</svg>

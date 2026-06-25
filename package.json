@@ -1,0 +1,16 @@
+{
+  "name": "markwise",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Typora-style WYSIWYG markdown editor bundled for a native macOS WebKit app",
+  "type": "module",
+  "scripts": {
+    "bundle": "node build.mjs"
+  },
+  "dependencies": {
+    "@milkdown/crepe": "^7.6.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

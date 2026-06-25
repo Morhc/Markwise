@@ -1,0 +1,14 @@
+# Build-time dependencies
+node_modules/
+
+# Build outputs
+Markwise.app/
+app/web/bundle.js
+app/web/bundle.css
+
+# Transient icon render
+app/icon.svg.png
+app/AppIcon.iconset/
+
+# macOS cruft
+.DS_Store
