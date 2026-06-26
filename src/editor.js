@@ -6,6 +6,7 @@ import '@milkdown/crepe/theme/frame.css'
 import { $inputRule } from '@milkdown/kit/utils'
 import { InputRule } from '@milkdown/kit/prose/inputrules'
 import { linkSchema } from '@milkdown/kit/preset/commonmark'
+import { codeMirrorTheme, codeLanguages } from './codeblock.js'
 
 // Auto-convert `[text](url)` into a real link as soon as the closing `)` is typed.
 const linkInputRule = $inputRule((ctx) =>
@@ -19,6 +20,12 @@ const linkInputRule = $inputRule((ctx) =>
 )
 
 let crepe = null
+// The document content as last loaded or saved. The document is "dirty" only
+// when the current markdown differs from this baseline — robust against the
+// editor's own normalization and async setup transactions.
+let baseline = ''
+// True while a document is loading; setup events keep the baseline in sync.
+let loading = false
 
 // Post a message up to the native Swift host (WKScriptMessageHandler named "bridge").
 function post(msg) {
@@ -32,21 +39,44 @@ function post(msg) {
 // Open (or replace) the document with the given markdown text.
 async function open(markdown) {
   const root = document.getElementById('app')
+  loading = true
   if (crepe) {
     try { await crepe.destroy() } catch (e) { /* noop */ }
     crepe = null
   }
   root.innerHTML = ''
 
-  crepe = new Crepe({ root, defaultValue: markdown ?? '' })
+  crepe = new Crepe({
+    root,
+    defaultValue: markdown ?? '',
+    featureConfigs: {
+      [Crepe.Feature.CodeMirror]: {
+        theme: codeMirrorTheme,
+        languages: codeLanguages,
+      },
+    },
+  })
   crepe.editor.use(linkInputRule)
   crepe.on((listener) => {
-    listener.markdownUpdated((_ctx, md, prev) => {
-      if (md !== prev) post({ type: 'changed' })
+    listener.markdownUpdated((_ctx, md) => {
+      if (loading) {
+        // Keep the baseline in sync with the editor's own setup/normalization.
+        baseline = md
+        return
+      }
+      post({ type: md === baseline ? 'clean' : 'dirty' })
     })
   })
   await crepe.create()
-  post({ type: 'opened' })
+  baseline = crepe.getMarkdown()
+  // Let async setup transactions (e.g. code-block features) settle, folding
+  // them into the baseline, before we start reporting user edits.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    baseline = crepe.getMarkdown()
+    loading = false
+    post({ type: 'opened' })
+    post({ type: 'clean' })
+  }))
 }
 
 // Return the current document as markdown (called synchronously by the host on save).
@@ -54,7 +84,12 @@ function getMarkdown() {
   return crepe ? crepe.getMarkdown() : ''
 }
 
-window.MW = { open, getMarkdown }
+// Called by the host after a successful save: the current content is now clean.
+function markSaved() {
+  if (crepe) baseline = crepe.getMarkdown()
+}
+
+window.MW = { open, getMarkdown, markSaved }
 
 // Tell the host we're loaded and ready to receive a document.
 post({ type: 'ready' })

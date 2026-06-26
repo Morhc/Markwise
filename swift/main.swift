@@ -11,10 +11,15 @@ app.run()
 
 // MARK: - Delegate
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate, NSSearchFieldDelegate {
 
     var window: NSWindow!
     var webView: WKWebView!
+
+    /// Floating find-in-page bar (overlays the top-right of the web view).
+    var searchBar: NSView!
+    var searchField: NSSearchField!
+    var matchLabel: NSTextField!
 
     /// Currently open file (nil = untitled).
     var currentURL: URL?
@@ -61,7 +66,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         window.center()
         window.title = "Untitled"
         window.delegate = self
+        // Guard against ever restoring/shrinking to a degenerate sliver.
+        window.minSize = NSSize(width: 480, height: 360)
         window.setFrameAutosaveName("MarkwiseMainWindow")
+        // If a corrupt (too-small) frame was restored, reset to a sane size.
+        if window.frame.width < window.minSize.width || window.frame.height < window.minSize.height {
+            window.setContentSize(NSSize(width: 900, height: 720))
+            window.center()
+        }
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "bridge")
@@ -74,6 +86,116 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
         window.contentView = webView
         window.makeKeyAndOrderFront(nil)
+
+        buildSearchBar()
+    }
+
+    // MARK: Find bar (floating overlay, like Safari/Chrome)
+
+    func buildSearchBar() {
+        let barW: CGFloat = 380, barH: CGFloat = 40
+        // Top-right corner of the web view (AppKit origin is bottom-left).
+        let x = webView.bounds.width - barW - 16
+        let y = webView.bounds.height - barH - 12
+        let bar = NSView(frame: NSRect(x: x, y: y, width: barW, height: barH))
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        bar.layer?.cornerRadius = 8
+        bar.layer?.borderWidth = 1
+        bar.layer?.borderColor = NSColor.separatorColor.cgColor
+        bar.shadow = {
+            let s = NSShadow()
+            s.shadowColor = NSColor.black.withAlphaComponent(0.2)
+            s.shadowBlurRadius = 8
+            s.shadowOffset = NSSize(width: 0, height: -2)
+            return s
+        }()
+        // Pin to top-right as the window resizes.
+        bar.autoresizingMask = [.minXMargin, .minYMargin]
+        bar.isHidden = true
+
+        searchField = NSSearchField(frame: NSRect(x: 10, y: 8, width: 230, height: 24))
+        searchField.placeholderString = "Find"
+        searchField.delegate = self
+        searchField.sendsSearchStringImmediately = true
+        searchField.target = self
+        searchField.action = #selector(findNext(_:))
+
+        let prevBtn = NSButton(frame: NSRect(x: 246, y: 8, width: 30, height: 24))
+        prevBtn.title = "‹"
+        prevBtn.bezelStyle = .rounded
+        prevBtn.target = self
+        prevBtn.action = #selector(findPrevious(_:))
+        prevBtn.toolTip = "Previous (⇧⌘G)"
+
+        let nextBtn = NSButton(frame: NSRect(x: 278, y: 8, width: 30, height: 24))
+        nextBtn.title = "›"
+        nextBtn.bezelStyle = .rounded
+        nextBtn.target = self
+        nextBtn.action = #selector(findNext(_:))
+        nextBtn.toolTip = "Next (⌘G)"
+
+        let doneBtn = NSButton(frame: NSRect(x: 314, y: 8, width: 56, height: 24))
+        doneBtn.title = "Done"
+        doneBtn.bezelStyle = .rounded
+        doneBtn.target = self
+        doneBtn.action = #selector(hideSearch)
+        doneBtn.keyEquivalent = "\u{1B}" // Escape
+
+        matchLabel = NSTextField(labelWithString: "")
+        matchLabel.frame = NSRect(x: 12, y: -16, width: barW - 24, height: 14)
+        matchLabel.font = .systemFont(ofSize: 10)
+        matchLabel.textColor = .secondaryLabelColor
+        matchLabel.isHidden = true
+
+        bar.addSubview(searchField)
+        bar.addSubview(prevBtn)
+        bar.addSubview(nextBtn)
+        bar.addSubview(doneBtn)
+
+        webView.addSubview(bar)
+        searchBar = bar
+    }
+
+    @objc func showSearch() {
+        searchBar.isHidden = false
+        window.makeFirstResponder(searchField)
+        if !searchField.stringValue.isEmpty { runFind(backwards: false) }
+    }
+
+    @objc func hideSearch() {
+        searchBar.isHidden = true
+        // Clear any highlight in the web view.
+        webView.find("", configuration: WKFindConfiguration()) { _ in }
+        window.makeFirstResponder(webView)
+    }
+
+    @objc func findNext(_ sender: Any?) {
+        if searchBar.isHidden { showSearch(); return }
+        runFind(backwards: false)
+    }
+
+    @objc func findPrevious(_ sender: Any?) {
+        if searchBar.isHidden { showSearch(); return }
+        runFind(backwards: true)
+    }
+
+    func runFind(backwards: Bool) {
+        let query = searchField.stringValue
+        guard !query.isEmpty else { searchField.placeholderString = "Find"; return }
+        let config = WKFindConfiguration()
+        config.caseSensitive = false
+        config.wraps = true
+        config.backwards = backwards
+        webView.find(query, configuration: config) { [weak self] result in
+            // Visual cue: tint the field red when nothing matches.
+            self?.searchField.placeholderString = result.matchFound ? "Find" : "Not found"
+        }
+    }
+
+    // NSSearchFieldDelegate: live search as the user types.
+    func controlTextDidChange(_ obj: Notification) {
+        runFind(backwards: false)
     }
 
     func loadEditor() {
@@ -96,8 +218,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 pendingURL = nil
                 openFile(url)
             }
-        case "changed":
+        case "dirty":
             setDirty(true)
+        case "clean":
+            setDirty(false)
         default:
             break
         }
@@ -182,6 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             do {
                 try md.write(to: url, atomically: true, encoding: .utf8)
                 self.setDirty(false)
+                // Reset the editor's baseline so post-save edits are tracked correctly.
+                self.webView.evaluateJavaScript("window.MW.markSaved()", completionHandler: nil)
                 self.updateTitle()
                 NSDocumentController.shared.noteNewRecentDocumentURL(url)
             } catch {
@@ -300,13 +426,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(withTitle: "Find…", action: #selector(showSearch), keyEquivalent: "f")
+        editMenu.addItem(withTitle: "Find Next", action: #selector(findNext(_:)), keyEquivalent: "g")
+        let findPrev = NSMenuItem(title: "Find Previous", action: #selector(findPrevious(_:)), keyEquivalent: "g")
+        findPrev.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(findPrev)
 
         // View menu (zoom)
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: "View")
         viewMenuItem.submenu = viewMenu
-        viewMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+        // Full screen on ⌃⌘F so it doesn't clash with Find (⌘F).
+        let fullScreen = NSMenuItem(title: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+        fullScreen.keyEquivalentModifierMask = [.command, .control]
+        viewMenu.addItem(fullScreen)
 
         NSApp.mainMenu = mainMenu
     }
