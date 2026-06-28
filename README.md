@@ -1,6 +1,6 @@
-# Markwise
+# Markwise (Windows)
 
-A tiny, native macOS Markdown editor with **Typora-style inline editing**. Open a
+A tiny, native **Windows** Markdown editor with **Typora-style inline editing**. Open a
 `.md` file and you see the *rendered* document — headings, bold, lists, tables,
 syntax-highlighted code — and you edit it directly in place. No raw `#` and `**`
 clutter, no split-pane preview, no subscription.
@@ -9,8 +9,13 @@ clutter, no split-pane preview, no subscription.
   <img src="app/icon.svg" width="120" alt="Markwise icon">
 </p>
 
-It's a small Swift + WebKit app (a few MB) that hosts the open-source
-[Milkdown](https://milkdown.dev) editor, bundled to run fully offline.
+It's a small [Tauri 2](https://tauri.app) app: a Rust host that drives the system
+**WebView2** runtime hosting the open-source [Milkdown](https://milkdown.dev) editor,
+bundled to run fully offline.
+
+> This is the **`windows` branch**. The original macOS app (Swift + WebKit) lives on
+> `main`. Both share the same web editor (`src/`, `app/web/`); only the native host
+> differs. See [AGENTS.md](AGENTS.md) for the build/install runbook and architecture.
 
 ## Features
 
@@ -18,77 +23,77 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
 - **Set it as your default `.md` app** — double-click any markdown file to open it rendered.
 - **Editable everything** — headings, lists, tables, blockquotes, code blocks, links.
 - **Auto-linking** — type `[text](url)` and it converts to a real (blue) link.
-- **Native macOS** — real window, menus, Open/Save dialogs, ⌘S to save, recent files.
+- **Native Windows** — real window, menu bar, Open/Save dialogs, Ctrl+S to save, recent files, find-in-page.
 - **Self-contained & offline** — the editor is bundled into the app; no network needed.
 
 ## Requirements
 
-- macOS 12 (Monterey) or newer
-- To build: [Node.js](https://nodejs.org) 18+ and the Swift toolchain
-  (Xcode Command Line Tools: `xcode-select --install`)
+- Windows 10/11 with the **WebView2 runtime** (preinstalled on Windows 11; the installer
+  fetches it automatically if missing).
+- To build:
+  - [Node.js](https://nodejs.org) 18+ (bundles the editor)
+  - The [Rust toolchain](https://rustup.rs) (MSVC) + **"Desktop development with C++"**
+    workload from the Visual Studio Build Tools
 
 ## Build & install
 
-```bash
+```powershell
 git clone https://github.com/Morhc/Markwise.git
 cd Markwise
-npm install        # fetch the editor + bundler (build-time only)
-./build.sh         # bundles the editor, compiles Swift, assembles Markwise.app
+git checkout windows
+
+npm install                       # fetch the editor + the Tauri CLI (build-time only)
+npx tauri icon app/icon.svg       # one-time: generate src-tauri/icons/ (incl. icon.ico)
+npx tauri build                   # bundles the editor, compiles Rust, builds installers
 ```
 
-Then move the app into place:
+The installers are written to:
 
-```bash
-mv Markwise.app /Applications/
-open /Applications/Markwise.app
 ```
+src-tauri/target/release/bundle/nsis/Markwise_0.1.0_x64-setup.exe
+src-tauri/target/release/bundle/msi/Markwise_0.1.0_x64_en-US.msi
+```
+
+Run either installer. (For a quick dev run without installing, use `npx tauri dev`.)
 
 ## Set as the default app for `.md` files
 
-In Finder:
-
-1. Right-click any `.md` file → **Get Info**.
-2. Under **Open with**, choose **Markwise**.
-3. Click **Change All…** to apply it to every markdown file.
-
-(Or from the terminal, if you have [`duti`](https://github.com/moretension/duti):
-`duti -s com.josh.markwise net.daringfireball.markdown all`.)
+The installer registers Markwise as a handler for markdown extensions. To make it the
+default: right-click any `.md` file → **Open with** → **Choose another app** → pick
+**Markwise** → check **Always use this app**.
 
 ## Usage
 
-| Action      | Shortcut |
-|-------------|----------|
-| New         | ⌘N       |
-| Open        | ⌘O       |
-| Save        | ⌘S       |
-| Save As     | ⇧⌘S      |
-| Close       | ⌘W       |
-| Full screen | ⌘F       |
+| Action      | Shortcut     |
+|-------------|--------------|
+| New         | Ctrl+N       |
+| Open        | Ctrl+O       |
+| Save        | Ctrl+S       |
+| Save As     | Ctrl+Shift+S |
+| Close       | Ctrl+W       |
+| Find        | Ctrl+F       |
+| Find Next   | Ctrl+G       |
+| Full screen | F11          |
 
-Open a file, edit it inline, press ⌘S. That's it.
+Open a file, edit it inline, press Ctrl+S. That's it.
 
 ## Project layout
 
 ```
 markwise/
-├── src/editor.js      # Editor logic + JS↔Swift bridge (Milkdown Crepe)
-├── swift/main.swift   # Native macOS host: window, menus, file open/save
+├── src/                  # shared, cross-platform editor (reused verbatim from main)
+│   ├── editor.js         #   editor logic + window.MW bridge (Milkdown Crepe)
+│   └── codeblock.js      #   CodeMirror theme + languages
 ├── app/
-│   ├── web/           # HTML shell + built bundle (bundle.js / bundle.css)
-│   ├── icon.svg       # App icon source
-│   └── AppIcon.icns   # Built icon
-├── build.mjs          # esbuild config (bundles editor into one JS+CSS)
-├── build.sh           # Full build: bundle → compile → assemble .app
-├── make-icon.sh       # Regenerate AppIcon.icns from icon.svg
-└── Info.plist         # App metadata + Markdown file-type associations
-```
-
-## Rebuilding the icon
-
-Edit `app/icon.svg`, then:
-
-```bash
-./make-icon.sh && ./build.sh
+│   ├── web/              #   HTML shell + built bundle (bundle.js / bundle.css)
+│   └── icon.svg          #   app icon source
+├── build.mjs             # esbuild config (bundles the editor into one JS+CSS)
+├── src-tauri/            # the Windows host
+│   ├── src/lib.rs        #   window, menus, open/save, dirty state, the JS↔Rust bridge
+│   ├── src/init.js       #   webkit→Tauri bridge shim + find-in-page overlay
+│   ├── tauri.conf.json   #   app metadata, file associations, bundling
+│   └── Cargo.toml
+└── package.json          # `dev` / `build` / `bundle` scripts
 ```
 
 ## License

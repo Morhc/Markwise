@@ -5,12 +5,16 @@
   "description": "Typora-style WYSIWYG markdown editor bundled for a native macOS WebKit app",
   "type": "module",
   "scripts": {
-    "bundle": "node build.mjs"
+    "bundle": "node build.mjs",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
   },
   "dependencies": {
     "@milkdown/crepe": "^7.6.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2",
     "esbuild": "^0.24.0"
   }
 }
