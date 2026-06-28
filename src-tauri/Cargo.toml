@@ -1,0 +1,38 @@
+[package]
+name = "markwise"
+version = "0.1.0"
+description = "Typora-style WYSIWYG markdown editor (Windows host)"
+authors = ["josh"]
+edition = "2021"
+rust-version = "1.77"
+
+# The Tauri host is split into a library (all the real code) and a thin binary,
+# which is the layout Tauri's tooling expects.
+[lib]
+name = "markwise_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Win32 MessageBox for the 3-way "Save / Don't Save / Cancel" prompt, which the
+# dialog plugin's 2-button API can't express.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Foundation",
+] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
