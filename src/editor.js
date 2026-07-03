@@ -19,6 +19,27 @@ const linkInputRule = $inputRule((ctx) =>
   })
 )
 
+// Turn a list item into a checklist item when you type `[] `, `[ ] ` or `[x] `.
+// More forgiving than the built-in GFM rule (which requires the inner space).
+const taskListInputRule = $inputRule(() =>
+  new InputRule(/^\[(\s|x|X)?\]\s$/, (state, match, start, end) => {
+    const pos = state.doc.resolve(start)
+    // Walk up to the enclosing list item, if any.
+    let depth = 0
+    let node = pos.node(depth)
+    while (node && node.type.name !== 'list_item') {
+      depth--
+      node = pos.node(depth)
+    }
+    if (!node || node.attrs.checked != null) return null
+    const checked = /x/i.test(match[1] ?? '')
+    const listPos = pos.before(depth)
+    return state.tr
+      .deleteRange(start, end)
+      .setNodeMarkup(listPos, undefined, { ...node.attrs, checked })
+  })
+)
+
 let crepe = null
 // The document content as last loaded or saved. The document is "dirty" only
 // when the current markdown differs from this baseline — robust against the
@@ -57,6 +78,7 @@ async function open(markdown) {
     },
   })
   crepe.editor.use(linkInputRule)
+  crepe.editor.use(taskListInputRule)
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, md) => {
       if (loading) {
