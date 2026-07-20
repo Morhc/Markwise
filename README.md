@@ -33,25 +33,30 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
 git clone https://github.com/Morhc/Markwise.git
 cd Markwise
 npm install        # fetch the editor + bundler (build-time only)
-./build.sh         # bundles the editor, compiles Swift, assembles Markwise.app
+./install.sh       # build, install to /Applications, and set as the default .md app
 ```
 
-Then move the app into place:
+`install.sh` runs `build.sh`, copies the app to `/Applications`, registers it with
+Launch Services, and makes it the default handler for `.md` files. Run it again any
+time to reinstall the latest build.
+
+### Build only (no install)
 
 ```bash
-mv Markwise.app /Applications/
-open /Applications/Markwise.app
+./build.sh         # bundles the editor, compiles Swift, assembles ./Markwise.app
+open ./Markwise.app
 ```
 
 ## Set as the default app for `.md` files
 
-In Finder:
+`./install.sh` already does this. To (re)apply it on its own without a full install:
 
-1. Right-click any `.md` file → **Get Info**.
-2. Under **Open with**, choose **Markwise**.
-3. Click **Change All…** to apply it to every markdown file.
+```bash
+swift -e 'import AppKit; LSSetDefaultRoleHandlerForContentType("net.daringfireball.markdown" as CFString, .all, "com.josh.markwise" as CFString)'
+```
 
-(Or from the terminal, if you have [`duti`](https://github.com/moretension/duti):
+Or in Finder: right-click any `.md` → **Get Info** → **Open with: Markwise** →
+**Change All…**. (Or, if you have [`duti`](https://github.com/moretension/duti):
 `duti -s com.josh.markwise net.daringfireball.markdown all`.)
 
 ## Usage
@@ -79,9 +84,18 @@ markwise/
 │   └── AppIcon.icns   # Built icon
 ├── build.mjs          # esbuild config (bundles editor into one JS+CSS)
 ├── build.sh           # Full build: bundle → compile → assemble .app
+├── install.sh         # Build + install to /Applications + set default .md handler
 ├── make-icon.sh       # Regenerate AppIcon.icns from icon.svg
 └── Info.plist         # App metadata + Markdown file-type associations
 ```
+
+## Developing
+
+`build.sh` builds `./Markwise.app` in place and registers it with Launch Services.
+Because this dev copy and the installed `/Applications/Markwise.app` share the same
+bundle id (`com.josh.markwise`), **running `./build.sh` can quietly make the dev copy
+the default `.md` handler again.** If double-clicking a `.md` starts opening the dev
+build, just re-run `./install.sh` to point the default back at `/Applications`.
 
 ## Rebuilding the icon
 

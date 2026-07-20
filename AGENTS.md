@@ -77,12 +77,25 @@ ls ~/Library/Logs/DiagnosticReports/Markwise* 2>/dev/null && echo "CRASHED" || e
 
 ## 5. Install
 
+One shot (build + install + register + set default `.md` handler):
+
+```bash
+./install.sh
+```
+
+Or manually:
+
 ```bash
 pkill -f "Markwise.app/Contents/MacOS/Markwise" 2>/dev/null || true
 rm -rf /Applications/Markwise.app
 cp -R Markwise.app /Applications/
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Markwise.app
 ```
+
+Note: the dev copy (`./Markwise.app`) and the installed copy share bundle id
+`com.josh.markwise`. `build.sh` registers the dev copy, which can reclaim the
+default `.md` handler; `install.sh` unregisters the dev copy and re-asserts the
+installed one, so prefer it.
 
 ## 6. Set as default handler for Markdown (optional)
 
