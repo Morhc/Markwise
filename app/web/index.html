@@ -9,14 +9,96 @@
     html, body { margin: 0; padding: 0; height: 100%; background: #fff; }
     #app { height: 100vh; overflow: auto; }
     .milkdown { height: 100%; }
-    /* Give the text a comfortable centered column like Typora. */
-    .milkdown .editor { max-width: 860px; margin: 0 auto; padding: 32px 24px 64px; }
+    /* Give the text a comfortable centered column like Typora. The generous
+       side padding also leaves room for the floating block (+/drag) handle,
+       which is 66px wide and sits 16px to the left of the text — it needs
+       ~82px of clearance or it clips at the window edge. This padding is
+       measured from the text column, so the handle stays visible at ANY
+       window width. */
+    .milkdown .editor { max-width: 860px; margin: 0 auto; padding: 32px 88px 64px; }
     /* Links: classic blue, underlined, pointer cursor. */
     .milkdown .editor a,
     .milkdown .editor a * { color: #0b66c3 !important; text-decoration: underline; cursor: pointer; }
+
+    /* --- Link tooltip: "Copied!" confirmation on the copy button ----------- */
+    .link-preview .link-icon.mw-copied { position: relative; color: #1a7f37; transform: scale(1.12); transition: transform .12s ease; }
+    .link-preview .link-icon.mw-copied::after {
+      content: 'Copied!';
+      position: absolute;
+      bottom: calc(100% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1a7f37;
+      color: #fff;
+      font-size: 11px;
+      line-height: 1;
+      padding: 4px 7px;
+      border-radius: 5px;
+      white-space: nowrap;
+      pointer-events: none;
+      animation: mw-copied-pop 1.2s ease forwards;
+    }
+    @keyframes mw-copied-pop {
+      0%   { opacity: 0; transform: translate(-50%, 4px); }
+      15%  { opacity: 1; transform: translate(-50%, 0); }
+      80%  { opacity: 1; transform: translate(-50%, 0); }
+      100% { opacity: 0; transform: translate(-50%, -2px); }
+    }
+
+    /* --- Document outline sidebar (hidden by default) ---------------------- */
+    #outline {
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      width: 240px;
+      box-sizing: border-box;
+      padding: 20px 8px 24px 16px;
+      overflow-y: auto;
+      background: #f7f7f8;
+      border-right: 1px solid #e4e4e7;
+      -webkit-user-select: none;
+      user-select: none;
+      display: none;
+      z-index: 50;
+    }
+    body.outline-open #outline { display: block; }
+    /* Push the editor column clear of the sidebar when it's open. */
+    body.outline-open #app { padding-left: 240px; }
+    .outline-title {
+      font: 600 11px/1 -apple-system, system-ui, sans-serif;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: #8a8a8e;
+      padding: 0 8px 10px;
+    }
+    .outline-empty {
+      font: 13px -apple-system, system-ui, sans-serif;
+      color: #a1a1aa;
+      padding: 4px 8px;
+    }
+    .outline-list { display: flex; flex-direction: column; }
+    .outline-item {
+      display: block;
+      font: 13px/1.35 -apple-system, system-ui, sans-serif;
+      color: #3f3f46 !important;
+      text-decoration: none !important;
+      padding: 5px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .outline-item:hover { background: #e9e9ec; }
+    .outline-item.h1 { font-weight: 600; }
+    .outline-item.h2 { padding-left: 20px; }
+    .outline-item.h3 { padding-left: 32px; color: #52525b !important; }
+    .outline-item.h4 { padding-left: 44px; color: #71717a !important; }
+    .outline-item.h5 { padding-left: 56px; color: #71717a !important; }
+    .outline-item.h6 { padding-left: 68px; color: #71717a !important; }
   </style>
 </head>
 <body>
+  <div id="outline"></div>
   <div id="app"></div>
   <script src="./bundle.js"></script>
 </body>

@@ -92,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Document-specific actions forward to the active window.
     @objc func saveDocument(_ sender: Any?) { activeDocument?.save() }
     @objc func saveDocumentAs(_ sender: Any?) { activeDocument?.saveAs() }
+    @objc func toggleOutline(_ sender: Any?) { activeDocument?.toggleOutline() }
     @objc func performFind(_ sender: Any?) { activeDocument?.showSearch() }
     @objc func findNext(_ sender: Any?) { activeDocument?.findNext() }
     @objc func findPrevious(_ sender: Any?) { activeDocument?.findPrevious() }
@@ -101,6 +102,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch item.action {
         case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)),
              #selector(performFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)):
+            return activeDocument != nil
+        case #selector(toggleOutline(_:)):
+            item.state = (activeDocument?.outlineVisible ?? false) ? .on : .off
             return activeDocument != nil
         default:
             return true
@@ -163,6 +167,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: "View")
         viewMenuItem.submenu = viewMenu
+        // Document outline sidebar (off by default) on ⌥⌘O.
+        let outline = NSMenuItem(title: "Show Document Outline", action: #selector(toggleOutline(_:)), keyEquivalent: "o")
+        outline.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(outline)
+        viewMenu.addItem(NSMenuItem.separator())
         // Full screen on ⌃⌘F so it doesn't clash with Find (⌘F).
         let fullScreen = NSMenuItem(title: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullScreen.keyEquivalentModifierMask = [.command, .control]
@@ -183,10 +192,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// MARK: - Editor web view (intercepts image-file drops)
+
+/// WKWebView's own drag handling doesn't reliably deliver Finder file drops to
+/// the web content, so we intercept image-file drops natively and hand the
+/// files to the editor as data URIs. Non-image drags fall through to WebKit.
+final class EditorWebView: WKWebView {
+    var onImageFilesDropped: (([URL], NSPoint) -> Bool)?
+    private let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "tif", "heic"]
+
+    private func imageURLs(_ sender: NSDraggingInfo) -> [URL] {
+        let opts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: opts) as? [URL] ?? []
+        return urls.filter { imageExts.contains($0.pathExtension.lowercased()) }
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        imageURLs(sender).isEmpty ? super.draggingEntered(sender) : .copy
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        imageURLs(sender).isEmpty ? super.draggingUpdated(sender) : .copy
+    }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        imageURLs(sender).isEmpty ? super.prepareForDragOperation(sender) : true
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = imageURLs(sender)
+        if urls.isEmpty { return super.performDragOperation(sender) }
+        let point = convert(sender.draggingLocation, from: nil)
+        return onImageFilesDropped?(urls, point) ?? false
+    }
+}
+
 // MARK: - Document window (per-window: one file, its editor, find bar, state)
 
 final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
-                            NSWindowDelegate, NSSearchFieldDelegate {
+                            WKUIDelegate, NSWindowDelegate, NSSearchFieldDelegate {
 
     weak var app: AppDelegate?
 
@@ -201,6 +242,8 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     var currentURL: URL?
     var isDirty = false
     var webReady = false
+    /// Whether the document outline sidebar is showing (off by default).
+    var outlineVisible = false
     /// A file requested before the editor finished loading.
     var pendingURL: URL?
 
@@ -225,14 +268,29 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         window.title = "Untitled"
         window.delegate = self
         window.isReleasedWhenClosed = false
-        // Guard against ever restoring/shrinking to a degenerate sliver.
-        window.minSize = NSSize(width: 480, height: 360)
+        // Keep the window wide enough for a comfortable column plus the block
+        // (+/drag) handle, and never let it shrink to a degenerate sliver.
+        window.minSize = NSSize(width: 600, height: 420)
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "bridge")
 
-        webView = WKWebView(frame: frame, configuration: config)
+        let editorWebView = EditorWebView(frame: frame, configuration: config)
+        editorWebView.onImageFilesDropped = { [weak self] urls, point in
+            guard let self else { return false }
+            let srcs = urls.compactMap { self.fileToDataURI($0) }
+            guard !srcs.isEmpty,
+                  let jsonData = try? JSONSerialization.data(withJSONObject: srcs),
+                  let json = String(data: jsonData, encoding: .utf8) else { return false }
+            // Flip AppKit's bottom-left origin to the web's top-left origin.
+            let cssX = point.x
+            let cssY = self.webView.bounds.height - point.y
+            self.webView.evaluateJavaScript("window.MW.insertImages(\(json), \(cssX), \(cssY))", completionHandler: nil)
+            return true
+        }
+        webView = editorWebView
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.autoresizingMask = [.width, .height]
         webView.setValue(false, forKey: "drawsBackground")
 
@@ -245,7 +303,11 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         guard let resourceURL = Bundle.main.resourceURL else { return }
         let webDir = resourceURL.appendingPathComponent("web", isDirectory: true)
         let indexURL = webDir.appendingPathComponent("index.html")
-        webView.loadFileURL(indexURL, allowingReadAccessTo: webDir)
+        // Grant read access to the whole filesystem so local images referenced
+        // by absolute/`file://` paths (e.g. ~/pictures) actually render. This is
+        // a local, unsigned personal app with no remote content, so the broad
+        // scope is acceptable.
+        webView.loadFileURL(indexURL, allowingReadAccessTo: URL(fileURLWithPath: "/"))
     }
 
     /// Ask this window to open a file once its editor is ready.
@@ -312,6 +374,13 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         searchBar = bar
     }
 
+    // MARK: Outline
+
+    func toggleOutline() {
+        outlineVisible.toggle()
+        webView.evaluateJavaScript("window.MW.setOutline(\(outlineVisible))", completionHandler: nil)
+    }
+
     func showSearch() {
         searchBar.isHidden = false
         window.makeFirstResponder(searchField)
@@ -371,9 +440,122 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             setDirty(true)
         case "clean":
             setDirty(false)
+        case "openLink":
+            if let href = body["href"] as? String { openExternal(href) }
+        case "editImage":
+            editImageSource(current: body["src"] as? String ?? "")
         default:
             break
         }
+    }
+
+    /// Open an http(s)/mailto link in the user's default browser/handler.
+    func openExternal(_ href: String) {
+        guard let url = URL(string: href), let scheme = url.scheme?.lowercased(),
+              ["http", "https", "mailto"].contains(scheme) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    // MARK: Image source editing (double-click an image)
+
+    /// Prompt to change an image's source: edit the text, or pick a file.
+    func editImageSource(current: String) {
+        let alert = NSAlert()
+        alert.messageText = "Edit image source"
+        alert.informativeText = "Enter an image URL or file path, or choose a file."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
+        field.stringValue = current
+        field.lineBreakMode = .byTruncatingHead
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")          // .alertFirstButtonReturn
+        alert.addButton(withTitle: "Choose File…")   // .alertSecondButtonReturn
+        alert.addButton(withTitle: "Cancel")         // .alertThirdButtonReturn
+        alert.window.initialFirstResponder = field
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            applyImageSource(normalizedImageSrc(field.stringValue))
+        case .alertSecondButtonReturn:
+            chooseImageFile()
+        default:
+            break
+        }
+    }
+
+    func chooseImageFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedFileTypes = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "tif", "heic"]
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            self.applyImageSource(url.absoluteString)
+        }
+    }
+
+    /// Turn a bare/`~` path into a proper file URL; pass URLs through unchanged.
+    func normalizedImageSrc(_ raw: String) -> String {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return s }
+        let lower = s.lowercased()
+        for scheme in ["http://", "https://", "file://", "data:"] where lower.hasPrefix(scheme) {
+            return s
+        }
+        var path = s
+        if path.hasPrefix("~") { path = (path as NSString).expandingTildeInPath }
+        if path.hasPrefix("/") { return URL(fileURLWithPath: path).absoluteString }
+        return s
+    }
+
+    /// Read an image file into a self-contained data: URL for embedding.
+    func fileToDataURI(_ url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let mime: String
+        switch url.pathExtension.lowercased() {
+        case "png": mime = "image/png"
+        case "jpg", "jpeg": mime = "image/jpeg"
+        case "gif": mime = "image/gif"
+        case "webp": mime = "image/webp"
+        case "svg": mime = "image/svg+xml"
+        case "bmp": mime = "image/bmp"
+        case "tiff", "tif": mime = "image/tiff"
+        case "heic": mime = "image/heic"
+        default: mime = "application/octet-stream"
+        }
+        return "data:\(mime);base64,\(data.base64EncodedString())"
+    }
+
+    func applyImageSource(_ src: String) {
+        let data = (try? JSONEncoder().encode(src)) ?? Data("\"\"".utf8)
+        let json = String(data: data, encoding: .utf8) ?? "\"\""
+        webView.evaluateJavaScript("window.MW.setImageSrc(\(json))", completionHandler: nil)
+    }
+
+    // MARK: Navigation (open external links outside the WebView)
+
+    // Catches clicks on real <a href> links (e.g. the URL shown in the link
+    // tooltip, which uses target="_blank"). Local file navigations are allowed;
+    // external links open in the default browser instead of inside the editor.
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url, !url.isFileURL,
+           let scheme = url.scheme?.lowercased(),
+           ["http", "https", "mailto"].contains(scheme) {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    // target="_blank" links ask WebKit to create a new web view; route them to
+    // the browser instead of silently dropping them.
+    func webView(_ webView: WKWebView,
+                 createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction,
+                 windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = navigationAction.request.url { NSWorkspace.shared.open(url) }
+        return nil
     }
 
     // MARK: Document operations
