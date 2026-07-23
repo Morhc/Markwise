@@ -20,6 +20,17 @@
     .milkdown .editor a,
     .milkdown .editor a * { color: #0b66c3 !important; text-decoration: underline; cursor: pointer; }
 
+    /* Inline code is styled `display: inline-block`, so a long unbroken token
+       (e.g. `exp_fu_overrides`) never wraps and spills into the next table
+       column. Inside table cells, let cell content — and inline code in
+       particular — break so it stays within its column. */
+    .milkdown .editor :is(td, th) { overflow-wrap: anywhere; }
+    .milkdown .editor :is(td, th) code {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
     /* --- Link tooltip: "Copied!" confirmation on the copy button ----------- */
     .link-preview .link-icon.mw-copied { position: relative; color: #1a7f37; transform: scale(1.12); transition: transform .12s ease; }
     .link-preview .link-icon.mw-copied::after {
