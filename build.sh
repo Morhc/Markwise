@@ -27,10 +27,15 @@ cp Info.plist "$CONTENTS/Info.plist"
 cp app/web/index.html app/web/bundle.js app/web/bundle.css "$RES/web/"
 [ -f app/AppIcon.icns ] && cp app/AppIcon.icns "$RES/AppIcon.icns" || true
 
-echo "==> Registering with Launch Services"
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-    -f "$APP" || true
+# NOTE: We deliberately do NOT register this dev build with Launch Services.
+# It shares its bundle id (com.josh.markwise) with the installed /Applications
+# copy. Registering both makes LS deduplicate by bundle id and sometimes resolve
+# the wrong copy — which breaks opening .md files from Finder's "Recents" and
+# drops Markwise from the Open With… list. Only install.sh registers, and it
+# registers the /Applications copy exclusively. See install.sh for the full story.
+# `open "$APP"` still works for a quick test without a persistent registration.
 
 echo ""
 echo "Built: $APP"
-echo "Open it with:  open \"$APP\""
+echo "Test it with:   open \"$APP\""
+echo "Install it with: ./install.sh   (registers the /Applications copy only)"

@@ -1,15 +1,33 @@
 #!/usr/bin/env bash
-# Build Markwise, install it to /Applications, register it with Launch Services,
-# and set it as the default app for Markdown files — in one shot.
+# Build Markwise, install it to /Applications, register ONLY that copy with
+# Launch Services, and set it as the default app for Markdown files — in one shot.
 #
-# Why this exists: the dev copy in this repo and the /Applications copy share the
-# same bundle id (com.josh.markwise). `build.sh` registers the *dev* copy, which
-# can quietly make it the default .md handler. This script installs the fresh
-# build to /Applications and makes that copy win.
+# ---------------------------------------------------------------------------
+# The duplicate-bundle-id trap (why this script is so careful)
+# ---------------------------------------------------------------------------
+# build.sh produces a dev bundle at ./Markwise.app that carries the SAME bundle
+# id (com.josh.markwise) as the installed /Applications/Markwise.app. Launch
+# Services keys apps by bundle id, so if BOTH copies are registered at once it
+# deduplicates them and can resolve the *wrong* (dev) copy.
+#
+# The tell-tale symptom of that confused state:
+#   * Opening a .md by browsing to it in Finder WORKS, but
+#   * Opening the same file from Finder's "Recents" view says
+#       "There is no application set to open the document", and
+#   * Markwise is missing from the Open With… "recommended applications" list.
+#   (Direct-open and the Recents/Spotlight path resolve the handler through
+#    different routes; only the latter trips over the duplicate.)
+#
+# The fix, enforced below: make sure EXACTLY ONE copy — the /Applications one —
+# is ever registered. After installing we unregister and DELETE the dev build
+# artifact, register the installed copy, set it as the default .md handler, then
+# verify no duplicate registration survived (and tell you how to recover if one
+# did). build.sh no longer registers its dev build for the same reason.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 APP="/Applications/Markwise.app"
+DEV_APP="$PWD/Markwise.app"
 BUNDLE_ID="com.josh.markwise"
 UTI="net.daringfireball.markdown"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
@@ -21,10 +39,14 @@ echo "==> Installing to $APP"
 pkill -f "Markwise.app/Contents/MacOS/Markwise" 2>/dev/null || true
 sleep 1
 rm -rf "$APP"
-cp -R Markwise.app /Applications/
+cp -R "$DEV_APP" /Applications/
 
-echo "==> Registering with Launch Services (installed copy wins over the dev copy)"
-"$LSREGISTER" -u "$PWD/Markwise.app" 2>/dev/null || true
+echo "==> Removing the dev build artifact (a second bundle with the same id is"
+echo "    exactly what breaks the Recents / Open With path)"
+"$LSREGISTER" -u "$DEV_APP" 2>/dev/null || true
+rm -rf "$DEV_APP"
+
+echo "==> Registering the installed copy with Launch Services"
 "$LSREGISTER" -f "$APP"
 
 echo "==> Setting Markwise as the default app for Markdown (.md)"
@@ -35,5 +57,22 @@ if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "$BUNDLE
     print("    default .md handler -> \(url.path)")
 }
 SWIFT
+
+echo "==> Verifying exactly one copy is registered under $BUNDLE_ID"
+count=$(swift - <<SWIFT
+import Foundation
+let urls = LSCopyApplicationURLsForBundleIdentifier("$BUNDLE_ID" as CFString, nil)?.takeRetainedValue() as? [URL] ?? []
+for u in urls { FileHandle.standardError.write("    registered: \(u.path)\n".data(using: .utf8)!) }
+print(urls.count)
+SWIFT
+)
+if [ "$count" != "1" ]; then
+    echo "!! WARNING: $count copies of $BUNDLE_ID are registered (expected 1)."
+    echo "   A stale duplicate can make .md files fail to open from Finder's Recents."
+    echo "   Rebuild the Launch Services database, then re-run this script:"
+    echo "     \"$LSREGISTER\" -r -domain local -domain system -domain user"
+    exit 1
+fi
+echo "    OK: exactly one registration."
 
 echo "==> Done. Installed and set as the default .md app: $APP"
