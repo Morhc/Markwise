@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import UniformTypeIdentifiers
 
 // MARK: - App entry
 
@@ -82,7 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedFileTypes = ["md", "markdown", "mdown", "mkd", "mdwn", "mkdn", "text", "txt"]
+        panel.allowedContentTypes = ["md", "markdown", "mdown", "mkd", "mdwn", "mkdn", "text", "txt"]
+            .compactMap { UTType(filenameExtension: $0) }
         panel.begin { [weak self] response in
             guard let self, response == .OK else { return }
             for url in panel.urls { self.openInWindow(url) }
@@ -485,7 +487,8 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.allowedFileTypes = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "tif", "heic"]
+        panel.allowedContentTypes = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "tif", "heic"]
+            .compactMap { UTType(filenameExtension: $0) }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let url = panel.url else { return }
             self.applyImageSource(url.absoluteString)
@@ -591,7 +594,8 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
     func saveAs() {
         let panel = NSSavePanel()
-        panel.allowedFileTypes = ["md", "markdown"]
+        panel.allowedContentTypes = ["md", "markdown"]
+            .compactMap { UTType(filenameExtension: $0) }
         panel.nameFieldStringValue = currentURL?.lastPathComponent ?? "Untitled.md"
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let url = panel.url else { return }
