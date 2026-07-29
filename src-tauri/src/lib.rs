@@ -142,6 +142,25 @@ fn bridge_message(app: AppHandle, win: WebviewWindow, msg: serde_json::Value) {
                 open_external(href);
             }
         }
+        // Windows-only, emitted by the image prompt in init.js (macOS does both
+        // of these inside its NSAlert). "editImage" itself never reaches here —
+        // init.js intercepts it to show the prompt.
+        "chooseImage" => {
+            let w = win.clone();
+            app.dialog()
+                .file()
+                .add_filter("Images", IMAGE_EXTS)
+                .pick_file(move |fp| {
+                    if let Some(p) = fp.and_then(|f| f.into_path().ok()) {
+                        apply_image_source(&w, &p);
+                    }
+                });
+        }
+        "imageFromPath" => {
+            if let Some(p) = msg.get("path").and_then(|v| v.as_str()) {
+                apply_image_source(&win, &normalize_local_path(p));
+            }
+        }
         _ => {} // "opened" and anything else: no-op
     }
 }
@@ -242,6 +261,90 @@ fn file_to_data_uri(path: &Path) -> Result<String, String> {
         .unwrap_or("")
         .to_ascii_lowercase();
     Ok(format!("data:{};base64,{}", mime_for(&ext), STANDARD.encode(bytes)))
+}
+
+/// Turn what the user typed into the image prompt into a path (the Windows
+/// counterpart of the macOS `normalizedImageSrc`): strip a `file://` prefix,
+/// percent-decode it, and expand `%VAR%` environment references.
+fn normalize_local_path(raw: &str) -> PathBuf {
+    let mut s = raw.trim().to_string();
+
+    if let Some(rest) = s
+        .strip_prefix("file:///")
+        .or_else(|| s.strip_prefix("file://"))
+    {
+        // Percent-decoding, only over the bytes a file URL actually escapes.
+        let bytes = rest.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                if let Ok(b) = u8::from_str_radix(hex, 16) {
+                    out.push(b);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        s = String::from_utf8_lossy(&out).replace('/', "\\");
+    }
+
+    PathBuf::from(expand_env_vars(&s))
+}
+
+/// Expand `%VAR%` references (`%USERPROFILE%\Pictures\x.png`). Unknown names are
+/// left as-is, one pass, so nothing can loop on a value that itself contains `%`.
+fn expand_env_vars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('%') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find('%') {
+            Some(close) => {
+                let name = &after[..close];
+                match std::env::var(name) {
+                    Ok(v) => out.push_str(&v),
+                    Err(_) => {
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = &after[close + 1..];
+            }
+            // Unpaired '%': keep it and stop looking.
+            None => {
+                out.push('%');
+                rest = after;
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Read `path` and hand it to the editor as a data: URI (macOS `applyImageSource`).
+fn apply_image_source(win: &WebviewWindow, path: &Path) {
+    match file_to_data_uri(path) {
+        Ok(uri) => {
+            let json = serde_json::to_string(&uri).unwrap_or_else(|_| "\"\"".to_string());
+            eval_in(win, &format!("window.MW && window.MW.setImageSrc({});", json));
+        }
+        Err(e) => {
+            // Leave the image as it was, and clear editor.js's pending position.
+            eval_in(win, "window.MW && window.MW.setImageSrc('');");
+            show_error(
+                win.app_handle(),
+                "Couldn't use that image",
+                &format!("{}\n\n{}", path.display(), e),
+            );
+        }
+    }
 }
 
 /// Files dropped onto a document window.
