@@ -72,6 +72,9 @@ struct AppState {
     recent: Mutex<Vec<PathBuf>>,
     /// Monotonic counter behind the `doc-N` window labels.
     next_id: AtomicU64,
+    /// Cascade origin (logical top-left of the first window) and how many steps
+    /// down from it the last window was placed.
+    cascade: Mutex<Option<((f64, f64), u32)>>,
 }
 
 /// What to do after a (possibly dirty-guarded) save completes. "New" and "Open"
@@ -269,10 +272,12 @@ fn file_to_data_uri(path: &Path) -> Result<String, String> {
 fn normalize_local_path(raw: &str) -> PathBuf {
     let mut s = raw.trim().to_string();
 
-    if let Some(rest) = s
-        .strip_prefix("file:///")
-        .or_else(|| s.strip_prefix("file://"))
-    {
+    if let Some(rest) = s.strip_prefix("file://") {
+        // file:///C:/x -> C:\x ; file://server/share -> \\server\share
+        let (prefix, rest) = match rest.strip_prefix('/') {
+            Some(local) => ("", local),
+            None => ("\\\\", rest),
+        };
         // Percent-decoding, only over the bytes a file URL actually escapes.
         let bytes = rest.as_bytes();
         let mut out = Vec::with_capacity(bytes.len());
@@ -289,7 +294,7 @@ fn normalize_local_path(raw: &str) -> PathBuf {
             out.push(bytes[i]);
             i += 1;
         }
-        s = String::from_utf8_lossy(&out).replace('/', "\\");
+        s = format!("{}{}", prefix, String::from_utf8_lossy(&out).replace('/', "\\"));
     }
 
     PathBuf::from(expand_env_vars(&s))
@@ -473,12 +478,32 @@ fn update_title(win: &WebviewWindow) {
 // Windows
 // ---------------------------------------------------------------------------
 
-/// Logical top-left for a cascaded new window, offset from the active one.
-fn cascade_from(app: &AppHandle) -> Option<(f64, f64)> {
-    let w = active_window(app)?;
-    let scale = w.scale_factor().unwrap_or(1.0);
-    let p = w.outer_position().ok()?;
-    Some((p.x as f64 / scale + 28.0, p.y as f64 / scale + 28.0))
+/// Logical top-left for the next window (the macOS `cascadeTopLeft`).
+///
+/// The running position is kept in `AppState` rather than read back from
+/// whichever window happens to be focused: opening several files at once
+/// creates windows faster than focus settles, and picking an arbitrary one to
+/// offset from would stack two of them in the same place.
+fn next_cascade(app: &AppHandle) -> Option<(f64, f64)> {
+    const STEP: f64 = 28.0;
+    const SPAN: u32 = 8;
+
+    let st = app.state::<AppState>();
+    let mut slot = st.cascade.lock().unwrap();
+    let (origin, step) = match *slot {
+        // Seed from the window already on screen, so the second window
+        // cascades off wherever the user actually left the first.
+        None => {
+            let w = active_window(app)?;
+            let scale = w.scale_factor().unwrap_or(1.0);
+            let p = w.outer_position().ok()?;
+            ((p.x as f64 / scale, p.y as f64 / scale), 0)
+        }
+        Some(prev) => prev,
+    };
+    let step = step % SPAN + 1; // wrap instead of marching off the desktop
+    *slot = Some((origin, step));
+    Some((origin.0 + STEP * step as f64, origin.1 + STEP * step as f64))
 }
 
 /// Create an empty document window (the macOS `makeDocumentWindow`).
@@ -514,7 +539,7 @@ fn make_document_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
             tauri::webview::NewWindowResponse::Deny
         });
 
-    builder = match cascade_from(app) {
+    builder = match next_cascade(app) {
         Some((x, y)) => builder.position(x, y),
         None => builder.center(),
     };
