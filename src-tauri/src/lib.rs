@@ -23,7 +23,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{
+    CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+};
 use tauri::{
     AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry,
 };
@@ -49,6 +51,9 @@ struct Doc {
     web_ready: bool,
     /// A file requested before this window's editor signalled `ready`.
     pending_path: Option<PathBuf>,
+    /// Outline sidebar visibility. The host is the source of truth (the menu
+    /// checkmark has to agree with it), so this drives window.MW.setOutline.
+    outline: bool,
 }
 
 #[derive(Default)]
@@ -254,7 +259,7 @@ fn cascade_from(app: &AppHandle) -> Option<(f64, f64)> {
 fn make_document_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let n = app.state::<AppState>().next_id.fetch_add(1, Ordering::Relaxed);
     let label = format!("doc-{}", n);
-    let menu = build_menu(app, &recent_snapshot(app))?;
+    let menu = build_menu(app, &recent_snapshot(app), false)?;
 
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title("Untitled")
@@ -596,7 +601,11 @@ fn push_recent(app: &AppHandle, path: &Path) {
 // the same menu into every window.
 // ---------------------------------------------------------------------------
 
-fn build_menu(app: &AppHandle, recent: &[PathBuf]) -> tauri::Result<tauri::menu::Menu<Wry>> {
+fn build_menu(
+    app: &AppHandle,
+    recent: &[PathBuf],
+    outline: bool,
+) -> tauri::Result<tauri::menu::Menu<Wry>> {
     let new = MenuItemBuilder::with_id("new", "New").accelerator("CmdOrCtrl+N").build(app)?;
     let open = MenuItemBuilder::with_id("open", "Open\u{2026}").accelerator("CmdOrCtrl+O").build(app)?;
 
@@ -655,10 +664,20 @@ fn build_menu(app: &AppHandle, recent: &[PathBuf]) -> tauri::Result<tauri::menu:
         .item(&find_prev)
         .build()?;
 
+    // macOS uses Alt+Cmd+O; on Windows Alt opens the menu bar and Ctrl+O is
+    // Open, so this follows the Ctrl+Shift+_ convention for panel toggles.
+    let outline_item = CheckMenuItemBuilder::with_id("outline", "Show Document Outline")
+        .checked(outline)
+        .accelerator("CmdOrCtrl+Shift+O")
+        .build(app)?;
     let fullscreen = MenuItemBuilder::with_id("fullscreen", "Toggle Full Screen")
         .accelerator("F11")
         .build(app)?;
-    let view = SubmenuBuilder::new(app, "View").item(&fullscreen).build()?;
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&outline_item)
+        .separator()
+        .item(&fullscreen)
+        .build()?;
 
     MenuBuilder::new(app).item(&file).item(&edit).item(&view).build()
 }
@@ -669,8 +688,11 @@ fn refresh_menus(app: &AppHandle) {
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
         let recent = recent_snapshot(&app);
-        for w in app.webview_windows().values() {
-            if let Ok(menu) = build_menu(&app, &recent) {
+        for (label, w) in app.webview_windows() {
+            // Seed each rebuild with that window's own outline state, or the
+            // rebuild would silently uncheck the item.
+            let outline = with_doc(&app, &label, |d| d.outline);
+            if let Ok(menu) = build_menu(&app, &recent, outline) {
                 let _ = w.set_menu(menu);
             }
         }
@@ -696,6 +718,20 @@ fn handle_menu(app: &AppHandle, label: &str, id: &str) {
         "find" => eval_in(&win, "window.__mwFind && window.__mwFind.show();"),
         "find_next" => eval_in(&win, "window.__mwFind && window.__mwFind.next();"),
         "find_prev" => eval_in(&win, "window.__mwFind && window.__mwFind.prev();"),
+        "outline" => {
+            let visible = with_doc(app, label, |d| {
+                d.outline = !d.outline;
+                d.outline
+            });
+            eval_in(&win, &format!("window.MW && window.MW.setOutline({});", visible));
+            // Flip just this item rather than rebuilding the whole menu.
+            if let Some(menu) = win.menu() {
+                if let Some(item) = menu.get("outline").and_then(|k| k.as_check_menuitem().cloned())
+                {
+                    let _ = item.set_checked(visible);
+                }
+            }
+        }
         "fullscreen" => {
             let f = win.is_fullscreen().unwrap_or(false);
             let _ = win.set_fullscreen(!f);
