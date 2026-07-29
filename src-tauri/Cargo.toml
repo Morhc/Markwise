@@ -23,10 +23,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Win32 MessageBox for the 3-way "Save / Don't Save / Cancel" prompt, which the
-# dialog plugin's 2-button API can't express.
+# dialog plugin's 2-button API can't express, plus ShellExecuteW to hand links
+# to the default browser (tauri-plugin-opener would be a whole extra crate and
+# ACL permission for the same one call).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
   "Win32_Foundation",
 ] }
 

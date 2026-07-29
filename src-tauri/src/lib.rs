@@ -123,8 +123,65 @@ fn bridge_message(app: AppHandle, win: WebviewWindow, msg: serde_json::Value) {
         }
         "dirty" => set_dirty(&win, true),
         "clean" => set_dirty(&win, false),
+        // Ctrl/Cmd-click on a link in the editor.
+        "openLink" => {
+            if let Some(href) = msg.get("href").and_then(|v| v.as_str()) {
+                open_external(href);
+            }
+        }
         _ => {} // "opened" and anything else: no-op
     }
+}
+
+// ---------------------------------------------------------------------------
+// External links
+// ---------------------------------------------------------------------------
+
+/// True for URLs the app should hand to the OS rather than navigate to.
+///
+/// This allowlist is security-relevant, not cosmetic: it gates `ShellExecuteW`,
+/// and it is reached from `on_new_window`, which fires on URLs that came out of
+/// whatever markdown the user pasted. `ShellExecuteW` on a `file:` URL or a bare
+/// path would happily launch the program it points at.
+fn is_external_scheme(scheme: &str) -> bool {
+    matches!(scheme, "http" | "https" | "mailto")
+}
+
+#[cfg(windows)]
+fn open_external(href: &str) {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let scheme = href.split(':').next().unwrap_or("").to_ascii_lowercase();
+    if !is_external_scheme(&scheme) {
+        return;
+    }
+    let op: Vec<u16> = "open\0".encode_utf16().collect();
+    let url: Vec<u16> = format!("{}\0", href).encode_utf16().collect();
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            url.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL as _,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn open_external(_href: &str) {}
+
+/// Does this URL belong to the app itself? On Windows the frontend is served
+/// from `http://tauri.localhost`, which IS scheme `http` — so the navigation
+/// filter has to check the host first or it cancels the app's own page load.
+fn is_app_url(url: &tauri::Url) -> bool {
+    let host = url.host_str().unwrap_or("");
+    host.is_empty()
+        || host == "localhost"
+        || host.ends_with("tauri.localhost")
+        || host.ends_with("asset.localhost")
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +264,24 @@ fn make_document_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .min_inner_size(600.0, 420.0)
         .initialization_script(INIT_SCRIPT)
         .menu(menu)
-        .on_menu_event(|w, ev| handle_menu(w.app_handle(), w.label(), ev.id().as_ref()));
+        .on_menu_event(|w, ev| handle_menu(w.app_handle(), w.label(), ev.id().as_ref()))
+        // A real <a> navigation to the web: cancel it and hand it to the browser.
+        .on_navigation(|url| {
+            if is_app_url(url) {
+                return true;
+            }
+            if is_external_scheme(url.scheme()) {
+                open_external(url.as_str());
+                return false;
+            }
+            true
+        })
+        // target="_blank" (Milkdown's link tooltip) goes through WebView2's
+        // new-window request instead, which never reaches on_navigation.
+        .on_new_window(|url, _features| {
+            open_external(url.as_str());
+            tauri::webview::NewWindowResponse::Deny
+        });
 
     builder = match cascade_from(app) {
         Some((x, y)) => builder.position(x, y),
