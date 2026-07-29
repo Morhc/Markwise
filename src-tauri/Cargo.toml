@@ -16,7 +16,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# protocol-asset serves local files to the webview over asset.localhost, which is
+# how images referenced by a plain path render (WebView2 blocks file:// from the
+# app's origin; macOS gets this from WKWebView's allowingReadAccessTo instead).
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }

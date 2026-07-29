@@ -136,6 +136,99 @@
     }
   }
 
+  // --- 4. Render images referenced by a local path ---
+  //
+  // A .md written elsewhere can contain ![](C:\pics\a.png) or ![](./img/a.png).
+  // The page is served from http://tauri.localhost, so file:// is blocked and a
+  // relative path resolves against the app bundle. Tauri's asset protocol can
+  // serve those files, but the rewrite has to be invisible to ProseMirror: the
+  // markdown model is what getMarkdown() serializes, and if the asset URL ever
+  // reached it we would write it into the user's file.
+  //
+  // Hooking the src setter (rather than mutating the DOM afterwards) means there
+  // is no mutation for ProseMirror to notice or revert, and getAttribute keeps
+  // returning what the caller wrote.
+  var docDir = null
+  // Called by the host on open, so relative paths resolve against the document.
+  window.__mwSetDocDir = function (dir) {
+    docDir = dir || null
+  }
+
+  function convertFileSrc(p) {
+    try {
+      return window.__TAURI_INTERNALS__.convertFileSrc(p)
+    } catch (e) {
+      return null
+    }
+  }
+
+  // Absolute (C:\x, \\server\x, /x) vs relative (./x, img/x).
+  function isAbsolutePath(p) {
+    return /^[a-zA-Z]:[\\/]/.test(p) || /^\\\\/.test(p) || /^\//.test(p)
+  }
+
+  function decode(s) {
+    try {
+      return decodeURIComponent(s)
+    } catch (e) {
+      return s
+    }
+  }
+
+  function rewriteLocal(v) {
+    if (typeof v !== 'string' || !v) return v
+    // Anything already loadable, including our own asset URLs, passes through.
+    if (/^(https?:|data:|blob:|asset:)/i.test(v)) return v
+
+    var p = v
+    if (/^file:\/\//i.test(p)) {
+      // file:///C:/x -> C:\x     file://server/share/x -> \\server\share\x
+      var body = p.replace(/^file:\/\//i, '')
+      p = /^\//.test(body) ? decode(body.slice(1)) : '\\\\' + decode(body)
+      p = p.replace(/\//g, '\\')
+    } else if (!isAbsolutePath(p)) {
+      if (!docDir) return v // unsaved document: nothing to resolve against
+      p = docDir.replace(/[\\/]+$/, '') + '\\' + p.replace(/^\.[\\/]/, '').replace(/\//g, '\\')
+    }
+    return convertFileSrc(p) || v
+  }
+
+  var imgSrc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')
+  if (imgSrc && imgSrc.get && imgSrc.set) {
+    Object.defineProperty(HTMLImageElement.prototype, 'src', {
+      configurable: true,
+      enumerable: imgSrc.enumerable,
+      get: function () {
+        return '__mwOrigSrc' in this ? this.__mwOrigSrc : imgSrc.get.call(this)
+      },
+      set: function (v) {
+        this.__mwOrigSrc = v
+        imgSrc.set.call(this, rewriteLocal(v))
+      },
+    })
+  }
+
+  var setAttr = Element.prototype.setAttribute
+  Element.prototype.setAttribute = function (name, value) {
+    if (this instanceof HTMLImageElement && String(name).toLowerCase() === 'src') {
+      this.__mwOrigSrc = value
+      return setAttr.call(this, name, rewriteLocal(value))
+    }
+    return setAttr.call(this, name, value)
+  }
+
+  var getAttr = Element.prototype.getAttribute
+  Element.prototype.getAttribute = function (name) {
+    if (
+      this instanceof HTMLImageElement &&
+      String(name).toLowerCase() === 'src' &&
+      '__mwOrigSrc' in this
+    ) {
+      return this.__mwOrigSrc
+    }
+    return getAttr.call(this, name)
+  }
+
   // --- 3. "Change image source" prompt (double-click an image) ---
   function showImagePrompt(current) {
     var back = document.createElement('div')

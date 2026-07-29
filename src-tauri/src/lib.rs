@@ -414,6 +414,15 @@ fn eval_in(win: &WebviewWindow, js: &str) {
     let _ = win.eval(js);
 }
 
+/// Tell the window's init.js which directory to resolve relative image paths
+/// against (`![](./img/a.png)`). Windows-only; macOS has no equivalent because
+/// relative paths don't render there either.
+fn set_doc_dir(win: &WebviewWindow, path: &Path) {
+    let dir = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
+    let json = serde_json::to_string(&dir).unwrap_or_else(|_| "\"\"".to_string());
+    eval_in(win, &format!("window.__mwSetDocDir && window.__mwSetDocDir({});", json));
+}
+
 fn send_to_editor(win: &WebviewWindow, text: &str) {
     // serde_json gives a correctly-escaped JS string literal (matches the Swift
     // JSONEncoder approach).
@@ -593,6 +602,7 @@ fn open_file(win: &WebviewWindow, path: PathBuf) {
         d.current_path = Some(path.clone());
         d.dirty = false;
     });
+    set_doc_dir(win, &path);
     send_to_editor(win, &text);
     push_recent(&app, &path);
     update_title(win);
@@ -661,6 +671,9 @@ fn save_to_path(win: &WebviewWindow, path: PathBuf, after: Option<AfterSave>) {
                     d.current_path = Some(path.clone());
                     d.dirty = false;
                 });
+                // Save As can move the document, which moves what its relative
+                // image paths resolve against.
+                set_doc_dir(&win, &path);
                 eval_in(&win, "window.MW && window.MW.markSaved && window.MW.markSaved();");
                 push_recent(&app, &path);
                 update_title(&win);
