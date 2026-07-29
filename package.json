@@ -2,7 +2,7 @@
   "name": "markwise",
   "version": "0.1.0",
   "private": true,
-  "description": "Typora-style WYSIWYG markdown editor bundled for a native macOS WebKit app",
+  "description": "Typora-style WYSIWYG markdown editor bundled for a native WebView2 app",
   "type": "module",
   "scripts": {
     "bundle": "node build.mjs",

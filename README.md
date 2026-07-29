@@ -22,7 +22,13 @@ bundled to run fully offline.
 - **Seamless WYSIWYG** — type `# ` and it becomes a heading; `**bold**` renders inline.
 - **Set it as your default `.md` app** — double-click any markdown file to open it rendered.
 - **Editable everything** — headings, lists, tables, blockquotes, code blocks, links.
-- **Auto-linking** — type `[text](url)` and it converts to a real (blue) link.
+- **Auto-linking** — type `[text](url)` and it converts to a real (blue) link;
+  Ctrl+click one to open it in your browser.
+- **Images** — type `![alt](url)`, drag an image file straight into the document, or
+  paste one. Double-click any image to change what it points at.
+- **Document outline** — a heading sidebar you can toggle with Ctrl+Shift+O.
+- **Checklists** — type `[] `, `[ ] ` or `[x] ` in a list to get a checkbox.
+- **One window per document** — open several files at once; each gets its own window.
 - **Native Windows** — real window, menu bar, Open/Save dialogs, Ctrl+S to save, recent files, find-in-page.
 - **Self-contained & offline** — the editor is bundled into the app; no network needed.
 
@@ -73,15 +79,24 @@ default: right-click any `.md` file → **Open with** → **Choose another app**
 | Close       | Ctrl+W       |
 | Find        | Ctrl+F       |
 | Find Next   | Ctrl+G       |
+| Show Document Outline | Ctrl+Shift+O |
 | Full screen | F11          |
 
 Open a file, edit it inline, press Ctrl+S. That's it.
+
+## Known limitations
+
+- **Dropped and picked images are embedded** in the document as base64 `data:` URIs
+  rather than linked. That keeps the `.md` self-contained and portable, but a document
+  with several photos in it gets large.
+- Images **referenced by a relative path** only resolve once the document has been
+  saved somewhere — an unsaved document has no directory to resolve them against.
 
 ## Project layout
 
 ```
 markwise/
-├── src/                  # shared, cross-platform editor (reused verbatim from main)
+├── src/                  # shared, cross-platform editor (kept identical to `main`)
 │   ├── editor.js         #   editor logic + window.MW bridge (Milkdown Crepe)
 │   └── codeblock.js      #   CodeMirror theme + languages
 ├── app/
@@ -89,8 +104,8 @@ markwise/
 │   └── icon.svg          #   app icon source
 ├── build.mjs             # esbuild config (bundles the editor into one JS+CSS)
 ├── src-tauri/            # the Windows host
-│   ├── src/lib.rs        #   window, menus, open/save, dirty state, the JS↔Rust bridge
-│   ├── src/init.js       #   webkit→Tauri bridge shim + find-in-page overlay
+│   ├── src/lib.rs        #   windows, menus, open/save, dirty state, the JS↔Rust bridge
+│   ├── src/init.js       #   webkit→Tauri bridge shim, find-in-page, image prompt
 │   ├── tauri.conf.json   #   app metadata, file associations, bundling
 │   └── Cargo.toml
 └── package.json          # `dev` / `build` / `bundle` scripts
