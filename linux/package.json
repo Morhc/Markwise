@@ -1,0 +1,11 @@
+{
+  "name": "markwise-linux-build",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Linux packaging toolchain for Markwise",
+  "license": "MIT",
+  "devDependencies": {
+    "@electron/packager": "20.0.0",
+    "electron": "42.3.0"
+  }
+}

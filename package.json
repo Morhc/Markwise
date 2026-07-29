@@ -2,15 +2,17 @@
   "name": "markwise",
   "version": "0.1.0",
   "private": true,
-  "description": "Typora-style WYSIWYG markdown editor bundled for a native macOS WebKit app",
+  "description": "Cross-platform Typora-style WYSIWYG Markdown editor",
   "type": "module",
   "scripts": {
-    "bundle": "node build.mjs"
+    "bundle": "node build.mjs",
+    "check": "node --check build.mjs && node --check src/editor.js && node --check src/codeblock.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/files.cjs",
+    "test": "node test/electron-files.test.cjs"
   },
   "dependencies": {
     "@milkdown/crepe": "^7.6.0"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.28.1"
   }
 }

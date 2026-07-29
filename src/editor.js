@@ -90,6 +90,10 @@ let pendingImagePos = null
 let baseline = ''
 // True while a document is loading; setup events keep the baseline in sync.
 let loading = false
+// Relative Markdown resources resolve from this controlled base. The host
+// supplies only a local directory URL derived from the open document path.
+const documentBase = document.getElementById('document-base')
+const shellBaseURL = documentBase?.href || new URL('.', window.location.href).href
 
 // Post a message up to the native Swift host (WKScriptMessageHandler named "bridge").
 function post(msg) {
@@ -134,9 +138,31 @@ function insertImagesAt(srcs, pos) {
   view.dispatch(view.state.tr.replaceWith(at, at, nodes).scrollIntoView())
 }
 
-// Open (or replace) the document with the given markdown text.
-async function open(markdown) {
+function setDocumentBase(baseURL) {
+  if (!documentBase) return false
+  if (baseURL == null || baseURL === '') {
+    documentBase.href = shellBaseURL
+    return true
+  }
+
+  try {
+    const parsed = new URL(baseURL)
+    if (parsed.protocol !== 'file:') return false
+    parsed.search = ''
+    parsed.hash = ''
+    if (!parsed.pathname.endsWith('/')) parsed.pathname += '/'
+    documentBase.href = parsed.href
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Open (or replace) the document with the given markdown text. The optional
+// base URL lets relative links and images resolve beside the Markdown file.
+async function open(markdown, baseURL = null) {
   const root = document.getElementById('app')
+  setDocumentBase(baseURL)
   loading = true
   view = null
   if (crepe) {
@@ -311,6 +337,60 @@ function toggleOutline() {
   return outlineVisible
 }
 
+// --- Find bar used by the Linux host ---------------------------------------
+const findBar = document.getElementById('find-bar')
+const findInput = document.getElementById('find-input')
+const findResult = document.getElementById('find-result')
+
+function requestFind(forward, findNext) {
+  const query = findInput?.value || ''
+  post({ type: 'find', query, forward, findNext })
+  if (!query && findResult) findResult.textContent = ''
+}
+
+function showSearch() {
+  if (!findBar || !findInput) return
+  findBar.classList.add('visible')
+  findInput.focus()
+  findInput.select()
+  if (findInput.value) requestFind(true, false)
+}
+
+function hideSearch() {
+  if (!findBar) return
+  findBar.classList.remove('visible')
+  if (findResult) findResult.textContent = ''
+  post({ type: 'stopFind' })
+  try { view && view.focus() } catch (e) { /* noop */ }
+}
+
+function findStep(forward) {
+  if (!findBar?.classList.contains('visible')) {
+    showSearch()
+    return
+  }
+  requestFind(forward, true)
+}
+
+function setFindResult(active, total) {
+  if (!findResult) return
+  findResult.textContent = total > 0 ? `${active} of ${total}` : 'No results'
+}
+
+findInput?.addEventListener('input', () => requestFind(true, false))
+findInput?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    findStep(!event.shiftKey)
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    hideSearch()
+  }
+})
+document.getElementById('find-previous')?.addEventListener('click', () => findStep(false))
+document.getElementById('find-next')?.addEventListener('click', () => findStep(true))
+document.getElementById('find-close')?.addEventListener('click', hideSearch)
+
 // --- Image source editing ---------------------------------------------------
 // Find the document position of the image node whose DOM contains `el`. Robust
 // against zero-size broken images (unlike coordinate hit-testing).
@@ -358,7 +438,20 @@ function insertImages(srcs, x, y) {
   insertImagesAt(srcs, pos)
 }
 
-window.MW = { open, getMarkdown, markSaved, setOutline, toggleOutline, setImageSrc, insertImages }
+window.MW = {
+  open,
+  getMarkdown,
+  markSaved,
+  setDocumentBase,
+  setOutline,
+  toggleOutline,
+  showSearch,
+  hideSearch,
+  findStep,
+  setFindResult,
+  setImageSrc,
+  insertImages,
+}
 
 // Double-click an image to change the file/URL it points to (handy for fixing
 // broken paths). The native host presents the picker and replies via setImageSrc.
@@ -402,7 +495,6 @@ document.addEventListener('click', (e) => {
 // Hide the block handle while scrolling so it doesn't lag behind the content.
 document.getElementById('app')?.addEventListener('scroll', hideBlockHandle, { passive: true })
 
-// Tell the host we're loaded and ready to receive a document.
+// Tell the host the bridge is available. The host performs exactly one initial
+// open, either with a requested file or with an empty document.
 post({ type: 'ready' })
-// Start with an empty doc so the editor is visible even with no file.
-open('')

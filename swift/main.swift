@@ -435,6 +435,8 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             if let url = pendingURL {
                 pendingURL = nil
                 openFile(url)
+            } else {
+                sendToEditor(open: "")
             }
         case "dirty":
             setDirty(true)
@@ -564,7 +566,7 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         do {
             let text = try String(contentsOf: url, encoding: .utf8)
             currentURL = url
-            sendToEditor(open: text)
+            sendToEditor(open: text, relativeTo: url)
             setDirty(false)
             updateTitle()
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
@@ -573,10 +575,28 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         }
     }
 
-    func sendToEditor(open text: String) {
+    func documentBaseURL(for documentURL: URL?) -> String? {
+        guard let documentURL else { return nil }
+        let directory = documentURL.deletingLastPathComponent()
+        return URL(fileURLWithPath: directory.path, isDirectory: true).absoluteString
+    }
+
+    func documentBaseJSON(for documentURL: URL?) -> String {
+        let baseURL = documentBaseURL(for: documentURL)
+        let data = (try? JSONEncoder().encode(baseURL)) ?? Data("null".utf8)
+        return String(data: data, encoding: .utf8) ?? "null"
+    }
+
+    func sendToEditor(open text: String, relativeTo documentURL: URL? = nil) {
         let data = (try? JSONEncoder().encode(text)) ?? Data("\"\"".utf8)
         let json = String(data: data, encoding: .utf8) ?? "\"\""
-        webView.evaluateJavaScript("window.MW.open(\(json));", completionHandler: nil)
+        let baseJSON = documentBaseJSON(for: documentURL)
+        webView.evaluateJavaScript("window.MW.open(\(json), \(baseJSON));", completionHandler: nil)
+    }
+
+    func updateDocumentBase(for documentURL: URL?) {
+        let baseJSON = documentBaseJSON(for: documentURL)
+        webView.evaluateJavaScript("window.MW.setDocumentBase(\(baseJSON))", completionHandler: nil)
     }
 
     func fetchMarkdown(_ completion: @escaping (String) -> Void) {
@@ -607,6 +627,7 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
                 try md.write(to: url, atomically: true, encoding: .utf8)
                 self.setDirty(false)
                 self.webView.evaluateJavaScript("window.MW.markSaved()", completionHandler: nil)
+                self.updateDocumentBase(for: url)
                 self.updateTitle()
                 NSDocumentController.shared.noteNewRecentDocumentURL(url)
             } catch {

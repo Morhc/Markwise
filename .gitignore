@@ -1,8 +1,11 @@
 # Build-time dependencies
 node_modules/
+linux/node_modules/
 
 # Build outputs
 Markwise.app/
+build/
+dist/
 app/web/bundle.js
 app/web/bundle.css
 

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Markwise
+GenericName=Markdown Editor
+Comment=View and edit Markdown documents
+Exec="@EXECUTABLE@" %F
+Icon=com.josh.markwise
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/markdown;text/x-markdown;
+StartupWMClass=Markwise
+Keywords=Markdown;Editor;WYSIWYG;

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Launch a user-local Electron bundle without disabling Chromium's renderer sandbox.
+set -euo pipefail
+
+launcher_path="$(readlink -f "${BASH_SOURCE[0]}")"
+application_dir="$(dirname "$launcher_path")"
+binary="$application_dir/Markwise"
+
+if [ ! -x "$binary" ]; then
+    echo "error: Markwise executable is missing: $binary" >&2
+    exit 1
+fi
+
+apparmor_userns="/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+if [ -r "$apparmor_userns" ] && [ "$(tr -d '[:space:]' <"$apparmor_userns")" = "1" ]; then
+    if ! command -v bwrap >/dev/null 2>&1; then
+        echo "error: Ubuntu restricts unprivileged user namespaces and bubblewrap is missing." >&2
+        echo "Install it with: sudo apt install bubblewrap" >&2
+        exit 1
+    fi
+
+    exec bwrap \
+        --bind / / \
+        --dev-bind /dev /dev \
+        --proc /proc \
+        -- "$binary" --disable-setuid-sandbox "$@"
+fi
+
+exec "$binary" --disable-setuid-sandbox "$@"
