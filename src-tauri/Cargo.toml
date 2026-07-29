@@ -21,6 +21,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Dropped/picked images are embedded as data: URIs, so the markdown stays
+# self-contained (WebView2 won't load file:// from the app's origin anyway).
+base64 = "0.22"
 
 # Win32 MessageBox for the 3-way "Save / Don't Save / Cancel" prompt, which the
 # dialog plugin's 2-button API can't express, plus ShellExecuteW to hand links

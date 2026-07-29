@@ -39,6 +39,14 @@ const MARKDOWN_EXTS: &[&str] = &[
 ];
 const RECENT_LIMIT: usize = 10;
 
+const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "tif", "heic", "avif",
+];
+/// Images are embedded as base64 data URIs, so they land in the .md verbatim and
+/// grow it by ~4/3. macOS has no such guard; a 12 MB PNG there becomes a ~16 MB
+/// string inside an eval and then inside the saved file.
+const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -190,6 +198,112 @@ fn is_app_url(url: &tauri::Url) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Images
+// ---------------------------------------------------------------------------
+
+fn has_ext(path: &Path, exts: &[&str]) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| exts.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+fn mime_for(ext: &str) -> &'static str {
+    match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "tiff" | "tif" => "image/tiff",
+        "heic" => "image/heic",
+        "avif" => "image/avif",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Read an image file into a `data:` URI (the macOS `fileToDataURI`).
+fn file_to_data_uri(path: &Path) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "This image is {:.1} MB. Markwise embeds images in the document, so they are limited to {} MB.",
+            meta.len() as f64 / (1024.0 * 1024.0),
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    Ok(format!("data:{};base64,{}", mime_for(&ext), STANDARD.encode(bytes)))
+}
+
+/// Files dropped onto a document window.
+///
+/// Rust owns drops here, not the webview: `drag_drop_handler_enabled` defaults
+/// to true, so wry intercepts WebView2's drop and the page never sees an HTML5
+/// `drop` event. (Crepe's own uploader therefore only ever fires on paste.)
+fn handle_drop(win: &WebviewWindow, paths: Vec<PathBuf>, position: tauri::PhysicalPosition<f64>) {
+    let images: Vec<PathBuf> = paths
+        .iter()
+        .filter(|p| has_ext(p, IMAGE_EXTS))
+        .cloned()
+        .collect();
+
+    if images.is_empty() {
+        // Not images — but a dropped .md is a reasonable "open this".
+        if let Some(md) = paths.into_iter().find(|p| has_ext(p, MARKDOWN_EXTS)) {
+            open_in_window(win.app_handle(), md);
+        }
+        return;
+    }
+
+    // Windows and CSS share a top-left origin, so there is no Y flip to do
+    // (unlike AppKit). But `position` is in PHYSICAL pixels and posAtCoords()
+    // wants CSS pixels — without this division drops land in the wrong place on
+    // any display that isn't at 100% scaling.
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let (x, y) = (position.x / scale, position.y / scale);
+    let coords = if x.is_finite() && y.is_finite() {
+        format!("{}, {}", x, y)
+    } else {
+        // insertImages() falls back to the cursor for non-numeric coordinates.
+        "null, null".to_string()
+    };
+
+    let win = win.clone();
+    // Off the main thread: reading a dehydrated OneDrive placeholder can block
+    // for seconds while the file is hydrated.
+    std::thread::spawn(move || {
+        let mut srcs = Vec::new();
+        for p in images {
+            match file_to_data_uri(&p) {
+                Ok(uri) => srcs.push(uri),
+                Err(e) => show_error(
+                    win.app_handle(),
+                    "Couldn't insert image",
+                    &format!("{}\n\n{}", p.display(), e),
+                ),
+            }
+        }
+        if srcs.is_empty() {
+            return;
+        }
+        let json = serde_json::to_string(&srcs).unwrap_or_else(|_| "[]".to_string());
+        eval_in(
+            &win,
+            &format!("window.MW && window.MW.insertImages({}, {});", json, coords),
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
 // native -> JS helpers
 // ---------------------------------------------------------------------------
 
@@ -303,6 +417,11 @@ fn make_document_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
             api.prevent_close();
             if let Some(w) = h.get_webview_window(&label_for_event) {
                 guard_then(&w, AfterSave::Close);
+            }
+        }
+        WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) => {
+            if let Some(w) = h.get_webview_window(&label_for_event) {
+                handle_drop(&w, paths.clone(), *position);
             }
         }
         WindowEvent::Destroyed => {
