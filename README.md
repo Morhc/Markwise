@@ -17,7 +17,22 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
 - **Seamless WYSIWYG** — type `# ` and it becomes a heading; `**bold**` renders inline.
 - **Set it as your default `.md` app** — double-click any markdown file to open it rendered.
 - **Editable everything** — headings, lists, tables, blockquotes, code blocks, links.
-- **Auto-linking** — type `[text](url)` and it converts to a real (blue) link.
+- **Auto-linking** — type `[text](url)` and it converts to a real (blue) link;
+  double-click or ⌘-click a link to open it in your browser.
+- **Math** — `$E = mc^2$` renders with KaTeX. Click an equation to edit its LaTeX
+  with a live preview; delete the space between two equations to merge them.
+- **Superscript & subscript** — ⌃⌘+ and ⌃⌘−, written out as the `<sup>`/`<sub>`
+  HTML that GitHub, Pandoc and Typora all render.
+- **See the raw markdown** — ⌘/ swaps the rendered view for an editable source
+  view; edits made there flow back into the document.
+- **Relative image paths** — `![](images/pic.png)` resolves against the file's own
+  folder, and stays relative when saved.
+- **Pasted images land on disk** — paste or drop a picture (including one copied
+  from a web page) and it's written to an `images/` folder beside the document
+  and linked relatively, instead of being inlined as a base64 blob.
+- **Spell checking** — the system spell checker, over the whole document as soon
+  as it opens, with the usual Edit ▸ Spelling menu.
+- **Dark mode** — follows the system by default; View ▸ Appearance pins it.
 - **Native macOS** — real window, menus, Open/Save dialogs, ⌘S to save, recent files.
 - **Self-contained & offline** — the editor is bundled into the app; no network needed.
 
@@ -61,22 +76,79 @@ Or in Finder: right-click any `.md` → **Get Info** → **Open with: Markwise**
 
 ## Usage
 
-| Action      | Shortcut |
-|-------------|----------|
-| New         | ⌘N       |
-| Open        | ⌘O       |
-| Save        | ⌘S       |
-| Save As     | ⇧⌘S      |
-| Close       | ⌘W       |
-| Full screen | ⌘F       |
+| Action              | Shortcut |
+|---------------------|----------|
+| New                 | ⌘N       |
+| Open                | ⌘O       |
+| Save                | ⌘S       |
+| Save As             | ⇧⌘S      |
+| Reload from disk    | ⌘R       |
+| Show in Finder      | ⌥⌘R      |
+| Close               | ⌘W       |
+| Find                | ⌘F       |
+| Markdown source     | ⌘/       |
+| Document outline    | ⌥⌘O      |
+| Appearance          | View menu |
+| Superscript         | ⌃⌘+      |
+| Subscript           | ⌃⌘−      |
+| Full screen         | ⌃⌘F      |
 
 Open a file, edit it inline, press ⌘S. That's it.
+
+**Working with equations.** Type `$x^2$` to create one. Click a rendered
+equation to reopen its LaTeX in a small field with a live preview — Enter
+commits, Escape cancels, and clearing the field deletes the equation. Two
+equations separated by a single space merge into one when you delete the space,
+since `$a$$b$` isn't valid markdown for two.
+
+Superscript also answers to ⌃⌘= if you'd rather not reach for Shift.
+
+**Reloading.** ⌘R re-reads the file from disk, which is how you pick up edits
+made by another program. What it does depends on where the changes are:
+
+| On disk | In the editor | ⌘R does |
+|---|---|---|
+| unchanged | unchanged | says the file is already up to date |
+| changed | unchanged | reloads |
+| unchanged | unsaved edits | **saves them** — there's nothing to reload, so it keeps your work |
+| changed | unsaved edits | a real conflict — see below |
+
+On a real conflict you get four choices. **Merge Both** is the one that loses
+nothing: it merges the two against the text as you opened it, so edits that
+don't overlap are simply combined, and only lines both versions changed are
+marked up, in place, in the one file:
+
+```
+<<<<<<< YOUR VERSION (unsaved)
+the line as you wrote it
+<<<<<<< ON DISK (changed by another program)
+the line as the other program wrote it
+<<<<<<< END OF CONFLICT
+```
+
+Delete the version you don't want along with the three marker lines. (They all
+start with `<<<<<<<` rather than using git's `=======`/`>>>>>>>`, because those
+aren't safe in markdown — `=======` is a heading underline and `>>>>>>>` is a
+stack of blockquotes, so an editor mangles them on the next save.)
+
+The other choices are **Reload from Disk** (take theirs), **Keep My Version**
+(take yours), and **Cancel**.
+
+**Images.** Anything you paste or drop is written into an `images/` folder next
+to the document and linked as `images/name.png`, so the markdown stays portable
+and doesn't carry base64. An image copied from a web page is downloaded once so
+the document doesn't depend on that server later. Untitled documents have no
+folder to write into, so images stay embedded until you save the file somewhere.
 
 ## Project layout
 
 ```
 markwise/
 ├── src/editor.js      # Editor logic + JS↔Swift bridge (Milkdown Crepe)
+├── src/latex.js       # Inline-equation editing and merging
+├── src/supsub.js      # <sup>/<sub> marks + markdown round-tripping
+├── src/imageblock.js  # Keeps image alt text out of Milkdown's ratio field
+├── src/codeblock.js   # Code-block theme and language list
 ├── swift/main.swift   # Native macOS host: window, menus, file open/save
 ├── app/
 │   ├── web/           # HTML shell + built bundle (bundle.js / bundle.css)
