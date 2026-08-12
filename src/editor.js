@@ -191,7 +191,17 @@ function setBaseURL(href) {
 
 // Open (or replace) the document with the given markdown text. `baseHref` is
 // the directory of the file it came from, if any.
-async function open(markdown, baseHref) {
+//
+// Calls are queued: building an editor is asynchronous, and two overlapping
+// opens would race over `crepe`/`view` and could leave the visible editor and
+// the one we hold references to being different objects.
+let openQueue = Promise.resolve()
+function open(markdown, baseHref) {
+  openQueue = openQueue.then(() => openNow(markdown, baseHref)).catch(() => {})
+  return openQueue
+}
+
+async function openNow(markdown, baseHref) {
   const root = document.getElementById('app')
   if (baseHref !== undefined) setBaseURL(baseHref)
   loading = true
@@ -302,26 +312,47 @@ async function open(markdown, baseHref) {
       if (math) math.spec.draggable = false
     } catch (e) { /* view not ready — ignore */ }
   })
+  // Focus the moment the editor exists, not after the settle below: animation
+  // frames don't run on a schedule you can rely on while the window is still
+  // being put on screen, and waiting for them left the document visible but
+  // unfocused for as much as several seconds — it looks ready, but typing goes
+  // nowhere.
+  try { view && view.focus() } catch (e) { /* noop */ }
+
   baseline = crepe.getMarkdown()
   // Let async setup transactions (e.g. code-block features) settle, folding
   // them into the baseline, before we start reporting user edits. Callers await
   // this, so anything they post afterwards lands after the "clean" below.
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
-    baseline = crepe.getMarkdown()
-    loading = false
-    post({ type: 'opened' })
-    post({ type: 'clean' })
-    scheduleOutline()
-    // If source view is open (e.g. a file was opened, or reloaded from disk,
-    // while showing it), show the new document's markdown rather than the old.
-    if (sourceVisible && sourceEl) {
-      sourceOpenText = baseline
-      sourceEl.value = baseline
+  await settled()
+  baseline = crepe.getMarkdown()
+  loading = false
+  post({ type: 'opened' })
+  post({ type: 'clean' })
+  scheduleOutline()
+  // If source view is open (e.g. a file was opened, or reloaded from disk,
+  // while showing it), show the new document's markdown rather than the old.
+  if (sourceVisible && sourceEl) {
+    sourceOpenText = baseline
+    sourceEl.value = baseline
+  }
+  try { view && view.focus() } catch (e) { /* noop */ }
+}
+
+/// Wait for the editor's own setup transactions to land — two animation frames
+/// normally, but a timer wins if frames aren't being served, which is the case
+/// while a window is still coming up. Waiting on frames alone stalled opening a
+/// document for seconds.
+function settled(fallbackMs = 120) {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      resolve()
     }
-    // Focus the editor so you can start typing immediately (Typora-style).
-    try { view && view.focus() } catch (e) { /* noop */ }
-    resolve()
-  })))
+    requestAnimationFrame(() => requestAnimationFrame(finish))
+    setTimeout(finish, fallbackMs)
+  })
 }
 
 // Return the current document as markdown (called synchronously by the host on
@@ -382,10 +413,25 @@ let primeInterrupted = false
 // scroll position win over a background nicety. The timestamp also tells a
 // user's scroll apart from one the primer caused itself.
 let lastUserInputAt = 0
+// Where the caret was before the walk borrowed it, so a keystroke that arrives
+// mid-walk can put it back first.
+let primeOriginalPos = null
+
 for (const type of ['wheel', 'keydown', 'mousedown', 'touchstart']) {
-  document.addEventListener(type, () => {
+  document.addEventListener(type, (e) => {
     lastUserInputAt = Date.now()
+    if (!primeRunning) return
     primeInterrupted = true
+    // A keystroke would otherwise be typed wherever the walk had moved the
+    // caret to. This listener runs before the editor handles the key, so
+    // putting the caret back here means the character lands where the reader
+    // left it. (A click sets its own position, so it needs no help.)
+    if (e.type === 'keydown' && view && primeOriginalPos != null) {
+      try {
+        const at = Math.min(primeOriginalPos, view.state.doc.content.size)
+        view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, at)))
+      } catch (err) { /* document moved on — leave the selection be */ }
+    }
   }, { capture: true, passive: true })
 }
 
@@ -423,11 +469,13 @@ function primeVisibleBlocks() {
   primeRunning = true
   primeInterrupted = false
   const original = view.state.selection
+  primeOriginalPos = original.from
   const scrollTop = scroller ? scroller.scrollTop : 0
   let i = 0
 
   const finish = () => {
     primeRunning = false
+    primeOriginalPos = null
     if (primeInterrupted || !view) return // the reader took over; leave them be
     try {
       const at = Math.min(original.from, view.state.doc.content.size)
@@ -731,5 +779,9 @@ document.getElementById('app')?.addEventListener('scroll', hideBlockHandle, { pa
 
 // Tell the host we're loaded and ready to receive a document.
 post({ type: 'ready' })
-// Start with an empty doc so the editor is visible even with no file.
-open('')
+// Only build an empty editor when nothing is on its way. The host sets this
+// flag before the page loads if the window was opened for a file: otherwise we
+// would build an editor here and immediately tear it down when the file arrived
+// a moment later, which wastes the work and leaves focus pointing at a
+// destroyed view — the window looks ready while typing goes nowhere.
+if (!window.MW_PENDING_DOC) open('')

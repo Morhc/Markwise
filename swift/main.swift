@@ -21,6 +21,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set once we've opened at least one file/window during launch.
     var didCreateInitialWindow = false
 
+    /// A window created at launch, before we know whether a file is coming.
+    ///
+    /// Loading the page is the slow part of starting up — most of it is WebKit
+    /// spawning its content process — and it used to begin only once the
+    /// open-file event had been delivered and the window built, so none of it
+    /// overlapped. Starting it here runs that work alongside the rest of launch;
+    /// whichever document turns up first claims this window.
+    var prewarmedWindow: DocumentWindow?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        prewarmedWindow = makeDocumentWindow(expectsDocument: true)
+    }
+
+    /// Take the pre-warmed window if it's still going spare.
+    func claimPrewarmedWindow() -> DocumentWindow? {
+        guard let warm = prewarmedWindow, warm.currentURL == nil, warm.pendingURL == nil else { return nil }
+        prewarmedWindow = nil
+        return warm
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // WebKit reads its continuous-spell-check state from this default, but
         // only from the persistent domain — a `register(defaults:)` fallback is
@@ -33,16 +53,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyAppearance()
         buildMenu()
         installFormatKeyMonitor()
-        // If launched without a file to open, show one empty window.
+        // Nothing to open: the window waiting at launch becomes the empty one.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if self.documents.isEmpty { self.newDocument(nil) }
+            if let warm = self.claimPrewarmedWindow() { warm.openEmptyDocument() }
+            else if self.documents.isEmpty { self.newDocument(nil) }
         }
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
+    }
+
+    /// Quitting shouldn't throw away work any more than closing a window does.
+    ///
+    /// Saving can involve a sheet (an untitled document needs a destination) and
+    /// the editor answers asynchronously, so the decision can't be made inline:
+    /// the reply comes back through `NSApp.reply(toApplicationShouldTerminate:)`.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let unsaved = documents.filter { $0.isDirty }
+        guard !unsaved.isEmpty else { return .terminateNow }
+
+        // With several documents outstanding, offer the usual macOS shortcut of
+        // discarding the lot rather than walking through every one.
+        if unsaved.count > 1 {
+            let alert = NSAlert()
+            alert.messageText = "You have unsaved changes in \(unsaved.count) documents."
+            alert.informativeText = "Do you want to review them before quitting?"
+            alert.addButton(withTitle: "Review Changes…")
+            alert.addButton(withTitle: "Discard Changes")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: break
+            case .alertSecondButtonReturn: return .terminateNow
+            default: return .terminateCancel
+            }
+        }
+
+        reviewUnsaved(Array(unsaved))
+        return .terminateLater
+    }
+
+    /// Walk the unsaved documents one at a time; cancelling any one calls the
+    /// whole quit off, leaving the rest untouched.
+    private func reviewUnsaved(_ remaining: [DocumentWindow]) {
+        var rest = remaining
+        guard !rest.isEmpty else {
+            NSApp.reply(toApplicationShouldTerminate: true)
+            return
+        }
+        let doc = rest.removeFirst()
+        doc.confirmDiscardIfNeeded { [weak self] proceed in
+            guard proceed else {
+                NSApp.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            self?.reviewUnsaved(rest)
+        }
     }
 
     // Files opened via double-click, "Open With", or the default handler.
@@ -61,8 +129,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @discardableResult
-    func makeDocumentWindow() -> DocumentWindow {
-        let doc = DocumentWindow(app: self)
+    func makeDocumentWindow(openURL: URL? = nil, expectsDocument: Bool = false) -> DocumentWindow {
+        let doc = DocumentWindow(app: self, openURL: openURL, expectsDocument: expectsDocument)
         documents.append(doc)
         // Cascade so multiple windows don't stack exactly on top of each other.
         cascadePoint = doc.window.cascadeTopLeft(from: cascadePoint)
@@ -76,7 +144,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             existing.window.makeKeyAndOrderFront(nil)
             return
         }
-        makeDocumentWindow().requestOpen(url)
+        if let warm = claimPrewarmedWindow() {
+            warm.requestOpen(url) // already loading; hand it the file
+            return
+        }
+        // Hand the URL over at construction so the page knows a document is
+        // coming before it boots, and builds its editor once rather than twice.
+        makeDocumentWindow(openURL: url)
     }
 
     func documentDidClose(_ doc: DocumentWindow) {
@@ -402,9 +476,18 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     /// The text as last read or written — the common ancestor for a three-way
     /// merge when the file and the editor have both moved on.
     var lastSyncedText: String?
+    /// Whether a document is expected, so the page shouldn't build an empty
+    /// editor it would only have to throw away.
+    var expectsDocument = false
+    /// Set when nothing turned up and the window should just show a blank document.
+    var wantsEmptyDocument = false
 
-    init(app: AppDelegate) {
+    init(app: AppDelegate, openURL: URL? = nil, expectsDocument: Bool = false) {
         self.app = app
+        // Set before the page loads: the editor checks it to decide whether to
+        // build an empty document, which it would only have to throw away.
+        self.pendingURL = openURL
+        self.expectsDocument = expectsDocument || openURL != nil
         super.init()
         buildWindow()
         loadEditor()
@@ -430,6 +513,15 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "bridge")
+        if expectsDocument {
+            // Runs before the bundle does, so the editor can skip building an
+            // empty document it is about to replace.
+            config.userContentController.addUserScript(WKUserScript(
+                source: "window.MW_PENDING_DOC = true",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            ))
+        }
 
         let editorWebView = EditorWebView(frame: frame, configuration: config)
         editorWebView.onImageFilesDropped = { [weak self] urls, point in
@@ -478,9 +570,14 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         webView.loadFileURL(indexURL, allowingReadAccessTo: URL(fileURLWithPath: "/"))
     }
 
-    /// Ask this window to open a file once its editor is ready.
+    /// Ask this window to open a file, now or once its editor is ready.
     func requestOpen(_ url: URL) {
         if webReady { openFile(url) } else { pendingURL = url }
+    }
+
+    /// Nothing is coming — show an empty document instead.
+    func openEmptyDocument() {
+        if webReady { sendToEditor(open: "") } else { wantsEmptyDocument = true }
     }
 
     // MARK: Find bar (floating overlay, like Safari/Chrome)
@@ -616,6 +713,9 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             if let url = pendingURL {
                 pendingURL = nil
                 openFile(url)
+            } else if wantsEmptyDocument {
+                wantsEmptyDocument = false
+                sendToEditor(open: "")
             }
         case "opened":
             refreshSpellCheckingMarks()
@@ -908,6 +1008,9 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
         } catch {
             presentError("Couldn’t open file", error.localizedDescription)
+            // The page skips building an empty editor when a document is on its
+            // way, so give it one now or the window stays blank.
+            sendToEditor(open: "")
         }
     }
 
@@ -1135,25 +1238,30 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         if let url = currentURL { writeMarkdown(to: url) } else { saveAs() }
     }
 
-    func saveAs() {
+    /// `completion` reports whether the document ended up on disk — the caller
+    /// needs that when a save stands between the user and closing or quitting.
+    func saveAs(_ completion: ((Bool) -> Void)? = nil) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = ["md", "markdown"]
             .compactMap { UTType(filenameExtension: $0) }
         panel.nameFieldStringValue = currentURL?.lastPathComponent ?? "Untitled.md"
         panel.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response == .OK, let url = panel.url else { return }
+            guard let self, response == .OK, let url = panel.url else {
+                completion?(false) // backed out of the panel
+                return
+            }
             self.currentURL = url
             // The document may have moved directories, so relative image paths
             // now resolve somewhere else.
             let base = self.jsString(url.deletingLastPathComponent().absoluteString)
             self.webView.evaluateJavaScript("window.MW.setBaseURL(\(base))", completionHandler: nil)
-            self.writeMarkdown(to: url)
+            self.writeMarkdown(to: url, completion: completion)
         }
     }
 
-    func writeMarkdown(to url: URL) {
+    func writeMarkdown(to url: URL, completion: ((Bool) -> Void)? = nil) {
         fetchMarkdown { [weak self] md in
-            guard let self else { return }
+            guard let self else { completion?(false); return }
             do {
                 try md.write(to: url, atomically: true, encoding: .utf8)
                 self.lastKnownModification = self.modificationDate(of: url)
@@ -1162,8 +1270,10 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
                 self.webView.evaluateJavaScript("window.MW.markSaved()", completionHandler: nil)
                 self.updateTitle()
                 NSDocumentController.shared.noteNewRecentDocumentURL(url)
+                completion?(true)
             } catch {
                 self.presentError("Couldn’t save file", error.localizedDescription)
+                completion?(false)
             }
         }
     }
@@ -1202,25 +1312,28 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         app?.documentDidClose(self)
     }
 
+    /// Ask about unsaved changes before closing or quitting. `completion` is
+    /// true when it's safe to proceed — the document was saved, or the user
+    /// chose to throw the changes away.
     func confirmDiscardIfNeeded(_ completion: @escaping (Bool) -> Void) {
         guard isDirty else { completion(true); return }
+        window.makeKeyAndOrderFront(nil) // make it obvious which document this is
+
         let alert = NSAlert()
-        alert.messageText = "Do you want to save the changes?"
+        alert.messageText = "Do you want to save the changes you made to “\(currentURL?.lastPathComponent ?? "Untitled")”?"
         alert.informativeText = "Your changes will be lost if you don’t save them."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Don’t Save")
         alert.addButton(withTitle: "Cancel")
-        let response = alert.runModal()
-        switch response {
+        switch alert.runModal() {
         case .alertFirstButtonReturn:
+            // An untitled document has nowhere to go yet, so ask where. If the
+            // save doesn't happen — no destination chosen, or the write failed —
+            // don't proceed, or "Save" would quietly discard the work instead.
             if let url = currentURL {
-                fetchMarkdown { [weak self] md in
-                    try? md.write(to: url, atomically: true, encoding: .utf8)
-                    self?.setDirty(false)
-                    completion(true)
-                }
+                writeMarkdown(to: url) { completion($0) }
             } else {
-                completion(true)
+                saveAs { completion($0) }
             }
         case .alertSecondButtonReturn:
             completion(true)
