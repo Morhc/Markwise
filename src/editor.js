@@ -363,52 +363,113 @@ function mergeInputs(baseText, diskText) {
 }
 
 // --- Spell checking ---------------------------------------------------------
-// WebKit only spell-checks text it has seen edited, or the block the caret sits
-// in — so a freshly opened document has no marks until you visit each paragraph
-// yourself. There's no API to check a whole document, but walking the caret
-// through each block provokes the same per-block check. Selection-only
-// transactions don't touch the document, so this costs no undo step and never
-// marks the file dirty.
-function primeSpellCheck() {
-  if (!view || sourceVisible) return
-  const scroller = document.getElementById('app')
-  const scrollTop = scroller ? scroller.scrollTop : 0
-  const original = view.state.selection
+// WebKit only spell-checks the block the caret is in (or text it has watched
+// being edited), so a freshly opened document carries no marks until you visit
+// each paragraph yourself. There's no API to check a document outright, but
+// moving the caret through a block provokes the same per-block check.
+//
+// Only the blocks on screen are primed, and only once things have settled.
+// Priming the whole document meant one caret move per animation frame for every
+// block in the file — four seconds of them on a 240-block document — each one
+// putting the scroll position back where it started, which reads as the window
+// refusing to scroll for the first few seconds after opening.
+const primedBlocks = new WeakSet()
+let primeTimer = null
+let primeRunning = false
+let primeInterrupted = false
 
-  const positions = []
+// Any sign of the reader doing something stops the walk: their caret and their
+// scroll position win over a background nicety. The timestamp also tells a
+// user's scroll apart from one the primer caused itself.
+let lastUserInputAt = 0
+for (const type of ['wheel', 'keydown', 'mousedown', 'touchstart']) {
+  document.addEventListener(type, () => {
+    lastUserInputAt = Date.now()
+    primeInterrupted = true
+  }, { capture: true, passive: true })
+}
+
+function schedulePrime(delay = 200) {
+  clearTimeout(primeTimer)
+  primeTimer = setTimeout(primeVisibleBlocks, delay)
+}
+
+function restoreScroll(scroller, value) {
+  if (!scroller || scroller.scrollTop === value) return
+  scroller.scrollTop = value
+}
+
+function primeVisibleBlocks() {
+  if (!view || sourceVisible || primeRunning) return
+
+  const scroller = document.getElementById('app')
+  const viewportBottom = scroller ? scroller.clientHeight : window.innerHeight
+  const targets = []
   view.state.doc.descendants((node, pos) => {
     // Never step into a code block: there's nothing to spell-check in code, and
-    // moving the caret there hands focus to the embedded CodeMirror editor —
+    // moving the caret there hands focus to the embedded CodeMirror editor,
     // which then swallows shortcuts like ⌘/ that belong to the app.
     if (node.type.name === 'code_block' || node.type.spec.code) return false
-    if (node.isTextblock) {
-      if (node.textContent.trim()) positions.push(pos + 1)
-      return false // no need to walk inside a text block
+    if (!node.isTextblock) return true
+    if (node.textContent.trim() && !primedBlocks.has(node)) {
+      const dom = view.nodeDOM(pos)
+      const rect = dom && dom.getBoundingClientRect ? dom.getBoundingClientRect() : null
+      if (rect && rect.bottom > 0 && rect.top < viewportBottom) targets.push({ pos, node })
     }
-    return true
+    return false // no need to walk inside a text block
   })
+  if (!targets.length) return
 
+  primeRunning = true
+  primeInterrupted = false
+  const original = view.state.selection
+  const scrollTop = scroller ? scroller.scrollTop : 0
   let i = 0
-  const restore = () => {
+
+  const finish = () => {
+    primeRunning = false
+    if (primeInterrupted || !view) return // the reader took over; leave them be
     try {
       const at = Math.min(original.from, view.state.doc.content.size)
       view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, at)))
-    } catch (e) { /* document changed underneath us — leave the selection be */ }
-    if (scroller) scroller.scrollTop = scrollTop
-    // Make sure typing goes to the document, not to anything the walk touched.
-    try { view.focus() } catch (e) { /* noop */ }
+    } catch (e) { /* document moved on — leave the selection be */ }
+    // Putting the caret back reveals it, which scrolls the view to wherever it
+    // was — the top, for a freshly opened document. Undo that.
+    restoreScroll(scroller, scrollTop)
   }
+
   const step = () => {
-    // Bail out if the user started doing something; their caret wins.
-    if (!view || i >= positions.length) return restore()
+    if (primeInterrupted || !view || i >= targets.length) return finish()
+    const target = targets[i++]
     try {
-      const pos = Math.min(positions[i++], view.state.doc.content.size)
-      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos)))
-    } catch (e) { /* skip a position that no longer resolves */ }
-    if (scroller) scroller.scrollTop = scrollTop
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, target.pos + 1)))
+      primedBlocks.add(target.node)
+    } catch (e) { /* position no longer resolves — skip it */ }
+    // The targets are already on screen, so this is normally a no-op; it only
+    // catches a block that was partly below the fold.
+    if (!primeInterrupted) restoreScroll(scroller, scrollTop)
     requestAnimationFrame(step)
   }
   requestAnimationFrame(step)
+}
+
+/// Called by the host once a document has finished loading.
+function primeSpellCheck() {
+  schedulePrime(150)
+}
+
+// Check whatever the reader scrolls into view, once scrolling stops. Only a
+// scroll the reader actually drove counts: the primer's own scroll corrections
+// raise scroll events too, and acting on those would loop — correct, scroll,
+// prime, correct — walking the document on its own.
+{
+  const scroller = document.getElementById('app')
+  if (scroller) {
+    scroller.addEventListener('scroll', () => {
+      if (Date.now() - lastUserInputAt > 1200) return
+      schedulePrime(300)
+    }, { passive: true })
+  }
 }
 
 // --- Markdown source view ---------------------------------------------------
