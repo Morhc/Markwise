@@ -93,6 +93,29 @@
     }
 
     html, body { margin: 0; padding: 0; height: 100%; background: var(--mw-bg); }
+
+    /* Text selection. Overrides Crepe's `*::selection` (same specificity, later
+       in the cascade). Code blocks draw their own selection layer and are left
+       alone.
+
+       These are literal colours, not tokens: WebKit doesn't resolve custom
+       properties inside `::selection`, and paints the selection black when it
+       can't. For the same reason the dark rule has to sit *after* the light one
+       — a media query adds no specificity, so source order decides. */
+    .milkdown .ProseMirror *::selection,
+    .milkdown .ProseMirror::selection,
+    #source::selection { background: #d5d5d5; }
+
+    @media (prefers-color-scheme: dark) {
+      /* Crepe nominally selects with #2f2f2f here, but the selection actually
+         paints near-black (#040404) because the custom property never resolves
+         — so selecting text was all but invisible. This is ~2.9:1 against the
+         #1a1a1a page (the 3:1 mark for non-text UI) and leaves the selected
+         text itself at 4.8:1. */
+      .milkdown .ProseMirror *::selection,
+      .milkdown .ProseMirror::selection,
+      #source::selection { background: #35659f; }
+    }
     #app { height: 100vh; overflow: auto; }
     .milkdown { height: 100%; }
     /* Give the text a comfortable centered column like Typora. The generous
