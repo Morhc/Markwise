@@ -21,6 +21,7 @@ editor and all of its assets are bundled into the installed application.
 - Relative image paths and localized pasted or dropped images
 - KaTeX equations, superscript, subscript, and editable Markdown source on macOS
 - System-aware dark mode
+- Print-friendly PDF export with rendered equations, code, tables, and images
 - Markdown file association and default-handler registration
 - Fully bundled editor with no server
 - macOS 12+ and 64-bit Ubuntu Linux support
@@ -116,6 +117,7 @@ open ./Markwise.app
 | Open | Command+O | Ctrl+O |
 | Save | Command+S | Ctrl+S |
 | Save As | Shift+Command+S | Ctrl+Shift+S |
+| Export as PDF | Shift+Command+E | Ctrl+Shift+E |
 | Find | Command+F | Ctrl+F |
 | Find next | Command+G | Ctrl+G |
 | Find previous | Shift+Command+G | Ctrl+Shift+G |
@@ -127,6 +129,9 @@ open ./Markwise.app
 | Subscript | Control+Command+- | - |
 
 Open a file, edit it inline, and save it with the platform shortcut.
+
+PDF export writes the current rendered document, including unsaved edits. It
+uses a light print theme and cancels with a warning if an image cannot be loaded.
 
 ## Architecture
 

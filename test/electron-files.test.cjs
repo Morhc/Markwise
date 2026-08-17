@@ -8,6 +8,7 @@ const test = require('node:test')
 const { pathToFileURL } = require('node:url')
 const {
   atomicWrite,
+  defaultPdfPath,
   documentBaseUrl,
   externalUrl,
   normalizeImageSource,
@@ -37,6 +38,11 @@ test('documentBaseUrl returns an encoded trailing-slash directory URL', () => {
   assert.equal(documentBaseUrl('/guide.md'), 'file:///')
 })
 
+test('defaultPdfPath follows the document name and handles untitled documents', () => {
+  assert.equal(defaultPdfPath('/tmp/notes/Guide.markdown'), '/tmp/notes/Guide.pdf')
+  assert.equal(defaultPdfPath(null), 'Untitled.pdf')
+})
+
 test('atomicWrite replaces contents without leaving temporary files', async () => {
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'markwise-test-'))
   const filePath = path.join(directory, 'document.md')
@@ -46,6 +52,20 @@ test('atomicWrite replaces contents without leaving temporary files', async () =
     await atomicWrite(filePath, '# New contents\n')
     assert.equal(await fs.promises.readFile(filePath, 'utf8'), '# New contents\n')
     assert.deepEqual(await fs.promises.readdir(directory), ['document.md'])
+  } finally {
+    await fs.promises.rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('atomicWrite preserves binary contents', async () => {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'markwise-binary-test-'))
+  const destination = path.join(directory, 'output.pdf')
+  const contents = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x00, 0xff])
+
+  try {
+    await atomicWrite(destination, contents)
+    assert.deepEqual(await fs.promises.readFile(destination), contents)
+    assert.deepEqual(await fs.promises.readdir(directory), ['output.pdf'])
   } finally {
     await fs.promises.rm(directory, { recursive: true, force: true })
   }

@@ -15,6 +15,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const {
   atomicWrite,
+  defaultPdfPath,
   documentBaseUrl,
   externalUrl,
   normalizeImageSource,
@@ -34,6 +35,10 @@ const IMAGE_FILTER = {
 
 const documents = new Map()
 const smokeTest = process.env.MARKWISE_SMOKE_TEST === '1'
+const pdfTestOutput = process.env.MARKWISE_PDF_TEST_OUTPUT
+  ? path.resolve(process.env.MARKWISE_PDF_TEST_OUTPUT)
+  : null
+const pdfTestSource = process.env.MARKWISE_PDF_TEST_SOURCE === '1'
 let smokeTestTimer = null
 let initialArguments = []
 
@@ -127,6 +132,7 @@ class DocumentWindow {
     this.dirty = false
     this.forceClose = false
     this.closePromptOpen = false
+    this.exportingPdf = false
     this.outlineVisible = false
     this.findQuery = ''
 
@@ -222,7 +228,35 @@ class DocumentWindow {
         if (smokeTest) {
           if (smokeTestTimer) clearTimeout(smokeTestTimer)
           console.log('Markwise smoke test: editor ready')
-          setImmediate(() => app.quit())
+          if (pdfTestOutput) {
+            if (pdfTestSource) {
+              await this.execute(`window.MW.setSource(true).then(() => {
+                const source = document.getElementById('source')
+                source.value += "\\n\\nPDF source-view edit"
+                source.dispatchEvent(new Event('input', { bubbles: true }))
+              })`)
+            }
+            let exported = await this.exportPdf(pdfTestOutput)
+            if (pdfTestSource) {
+              const sourceState = await this.execute(`({
+                open: document.body.classList.contains('source-open'),
+                text: document.getElementById('source').value,
+              })`)
+              const sourceRestored = sourceState?.open === true &&
+                sourceState.text?.includes('PDF source-view edit') && this.dirty
+              exported = exported && sourceRestored === true
+              console.log(`Markwise PDF source state: ${JSON.stringify({
+                open: sourceState?.open,
+                containsEdit: sourceState?.text?.includes('PDF source-view edit'),
+                dirty: this.dirty,
+              })}`)
+              console.log(`Markwise PDF source restoration: ${sourceRestored ? 'restored' : 'failed'}`)
+            }
+            console.log(`Markwise PDF smoke test: ${exported ? 'exported' : 'failed'}`)
+            setImmediate(() => app.exit(exported ? 0 : 1))
+          } else {
+            setImmediate(() => app.quit())
+          }
         }
         break
       case 'dirty':
@@ -295,6 +329,62 @@ class DocumentWindow {
     } catch (error) {
       await showError('Could not save file', error, this.window)
       return false
+    }
+  }
+
+  async exportPdf(fixedDestination = null) {
+    if (this.exportingPdf || !this.ready || this.window.isDestroyed()) return false
+    this.exportingPdf = true
+    let prepareAttempted = false
+
+    try {
+      let destination = fixedDestination
+      if (!destination) {
+        const result = await dialog.showSaveDialog(this.window, {
+          title: 'Export as PDF',
+          defaultPath: defaultPdfPath(this.filePath),
+          filters: [{ name: 'PDF document', extensions: ['pdf'] }],
+          properties: ['createDirectory', 'showOverwriteConfirmation'],
+        })
+        if (result.canceled || !result.filePath) return false
+        destination = result.filePath
+      }
+      if (!destination.toLowerCase().endsWith('.pdf')) destination += '.pdf'
+
+      prepareAttempted = true
+      const readiness = await this.execute('window.MW.preparePdfExport()')
+      if (!readiness || readiness.ok !== true) {
+        const missing = Array.isArray(readiness?.missingImages)
+          ? readiness.missingImages.slice(0, 20)
+          : []
+        const detail = missing.length
+          ? `The following images could not be loaded:\n\n${missing.join('\n')}`
+          : 'The document is already being prepared for export.'
+        if (smokeTest) console.error(`Could not export PDF: ${detail}`)
+        else await showError('Could not export PDF', detail, this.window)
+        return false
+      }
+
+      const pdf = await this.window.webContents.printToPDF({
+        displayHeaderFooter: false,
+        landscape: false,
+        margins: { top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 },
+        printBackground: true,
+      })
+      if (!Buffer.isBuffer(pdf) || pdf.length < 5 || pdf.subarray(0, 5).toString() !== '%PDF-') {
+        throw new Error('The print engine did not return a valid PDF document.')
+      }
+      await atomicWrite(path.resolve(destination), pdf)
+      return true
+    } catch (error) {
+      if (smokeTest) console.error(`Could not export PDF: ${errorDetail(error)}`)
+      else await showError('Could not export PDF', error, this.window)
+      return false
+    } finally {
+      if (prepareAttempted) {
+        await this.execute('window.MW.finishPdfExport()').catch(() => {})
+      }
+      this.exportingPdf = false
     }
   }
 
@@ -447,6 +537,11 @@ function buildMenu() {
           label: 'Save As...',
           accelerator: 'CmdOrCtrl+Shift+S',
           click: () => void activeDocument()?.save(true),
+        },
+        {
+          label: 'Export as PDF...',
+          accelerator: 'CmdOrCtrl+Shift+E',
+          click: () => void activeDocument()?.exportPdf(),
         },
         { type: 'separator' },
         { role: 'close' },

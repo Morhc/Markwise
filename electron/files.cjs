@@ -44,6 +44,12 @@ function documentBaseUrl(filePath) {
   return pathToFileURL(directoryPath).toString()
 }
 
+function defaultPdfPath(filePath) {
+  if (!filePath) return 'Untitled.pdf'
+  const parsed = path.parse(path.resolve(filePath))
+  return path.join(parsed.dir, `${parsed.name}.pdf`)
+}
+
 async function atomicWrite(filePath, contents) {
   const directory = path.dirname(filePath)
   const basename = path.basename(filePath)
@@ -60,7 +66,7 @@ async function atomicWrite(filePath, contents) {
     }
 
     handle = await fs.promises.open(temporaryPath, 'wx', mode)
-    await handle.writeFile(contents, 'utf8')
+    await handle.writeFile(contents)
     await handle.sync()
     await handle.close()
     handle = null
@@ -82,6 +88,7 @@ async function atomicWrite(filePath, contents) {
 
 module.exports = {
   atomicWrite,
+  defaultPdfPath,
   documentBaseUrl,
   externalUrl,
   normalizeImageSource,

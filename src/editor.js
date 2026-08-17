@@ -377,6 +377,83 @@ function markSaved() {
   if (crepe) baseline = crepe.getMarkdown()
 }
 
+// --- PDF export -------------------------------------------------------------
+// Native hosts generate the PDF, while the shared renderer owns the temporary
+// printable state. This keeps both platforms visually consistent and ensures
+// raw source edits are rendered before capture.
+let pdfExportState = null
+
+function waitWithTimeout(promise, timeoutMs) {
+  return Promise.race([
+    Promise.resolve(promise).catch(() => null),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ])
+}
+
+async function waitForPdfImages(timeoutMs = 10000) {
+  const images = [...document.querySelectorAll('.milkdown .editor img')]
+    .filter((img) => Boolean(img.getAttribute('src') || img.currentSrc))
+  const pending = images.map((img) => {
+    if (img.complete) return Promise.resolve()
+    return new Promise((resolve) => {
+      img.addEventListener('load', resolve, { once: true })
+      img.addEventListener('error', resolve, { once: true })
+    })
+  })
+  await waitWithTimeout(Promise.all(pending), timeoutMs)
+  return images
+    .filter((img) => !img.complete || img.naturalWidth === 0)
+    .map((img) => img.currentSrc || img.getAttribute('src') || '(unknown image)')
+}
+
+async function preparePdfExport() {
+  if (pdfExportState) return { ok: false, busy: true, missingImages: [] }
+
+  const appScroller = document.getElementById('app')
+  const active = document.activeElement
+  const state = {
+    sourceWasVisible: sourceVisible,
+    appScrollTop: appScroller?.scrollTop || 0,
+    sourceScrollTop: sourceEl?.scrollTop || 0,
+    sourceSelectionStart: sourceEl?.selectionStart || 0,
+    sourceSelectionEnd: sourceEl?.selectionEnd || 0,
+    editorHadFocus: Boolean(active && active.closest && active.closest('.milkdown')),
+  }
+  pdfExportState = state
+
+  if (sourceVisible) await setSource(false)
+  document.documentElement.classList.add('mw-pdf-export')
+  try { document.activeElement?.blur() } catch (e) { /* noop */ }
+  hideBlockHandle()
+  await settled(200)
+  if (document.fonts?.ready) await waitWithTimeout(document.fonts.ready, 10000)
+  const missingImages = await waitForPdfImages()
+  await settled(200)
+  return { ok: missingImages.length === 0, busy: false, missingImages }
+}
+
+async function finishPdfExport() {
+  const state = pdfExportState
+  if (!state) return
+  pdfExportState = null
+  document.documentElement.classList.remove('mw-pdf-export')
+
+  if (state.sourceWasVisible) {
+    await setSource(true)
+    if (sourceEl) {
+      sourceEl.scrollTop = state.sourceScrollTop
+      sourceEl.setSelectionRange(state.sourceSelectionStart, state.sourceSelectionEnd)
+    }
+    return
+  }
+
+  const appScroller = document.getElementById('app')
+  if (appScroller) appScroller.scrollTop = state.appScrollTop
+  if (state.editorHadFocus) {
+    try { view && view.focus() } catch (e) { /* noop */ }
+  }
+}
+
 // --- Merging ----------------------------------------------------------------
 // Round markdown through the parser and serializer without disturbing the open
 // document. Used before a three-way merge: the editor rewrites markdown into its
@@ -783,6 +860,7 @@ window.MW = {
   toggleMark: toggleTextMark,
   setSource, setBaseURL, primeSpellCheck, nativeReply, mergeInputs,
   showSearch, hideSearch, findStep, setFindResult,
+  preparePdfExport, finishPdfExport,
   // Test hook: lets the offscreen-WKWebView harness drive the document model
   // directly. Not used by the app itself.
   __view: () => view,
