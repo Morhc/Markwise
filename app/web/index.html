@@ -438,6 +438,18 @@
         overflow-wrap: anywhere;
         word-break: break-word;
       }
+      /* CodeMirror's 100%-height scroller fragments across pages as a tall
+         scrollbar. Let code blocks participate in normal print flow. */
+      .milkdown .milkdown-code-block,
+      .milkdown .milkdown-code-block .cm-editor,
+      .milkdown .milkdown-code-block .cm-scroller {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+      }
+      .milkdown .milkdown-code-block .cm-content {
+        min-height: 0 !important;
+      }
       .milkdown img {
         max-width: 100% !important;
         height: auto !important;
