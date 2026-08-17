@@ -1,4 +1,4 @@
-# AGENTS.md — Build & Install Markwise (agent-facing)
+# AGENTS.md - Build & Install Markwise (agent-facing)
 
 Deterministic instructions for an automated agent to build, install, verify, and
 troubleshoot Markwise on macOS. Prefer exact commands; verify each step's output
@@ -36,7 +36,7 @@ npm install
 ```
 
 Installs `@milkdown/crepe` (editor) and `esbuild` (bundler) into `node_modules/`.
-These are **build-time only** — they are not shipped inside `Markwise.app`.
+These are **build-time only** - they are not shipped inside `Markwise.app`.
 
 ## 3. Build
 
@@ -45,7 +45,7 @@ These are **build-time only** — they are not shipped inside `Markwise.app`.
 ```
 
 `build.sh` performs, in order:
-1. `node build.mjs` — esbuild bundles `src/editor.js` + all CSS/fonts/icons into
+1. `node build.mjs` - esbuild bundles `src/editor.js` + all CSS/fonts/icons into
    self-contained `app/web/bundle.js` and `app/web/bundle.css` (assets inlined as
    data URIs).
 2. Assembles `Markwise.app/Contents/` (`MacOS/`, `Resources/web/`).
@@ -99,7 +99,7 @@ installed one, so prefer it.
 
 ## 6. Set as default handler for Markdown (optional)
 
-Programmatic, no extra installs — uses Swift + LaunchServices:
+Programmatic, no extra installs - uses Swift + LaunchServices:
 
 ```bash
 swift - <<'SWIFT'
@@ -113,7 +113,7 @@ SWIFT
 
 To also catch `.markdown`/plain-text-typed files, repeat with content type
 `public.plain-text` if desired (note: this makes Markwise the default for *all*
-plain-text files — usually not wanted).
+plain-text files - usually not wanted).
 
 Alternative if [`duti`](https://github.com/moretension/duti) is available:
 
@@ -135,21 +135,51 @@ Icon caches are sticky. To force a refresh: `touch Markwise.app`, and if needed
 
 | Concern | File | Notes |
 |---|---|---|
-| Editor behavior, JS↔Swift bridge | `src/editor.js` | `window.MW.open(md)` / `window.MW.getMarkdown()`; posts `{type}` messages to native via `webkit.messageHandlers.bridge`. |
-| Native window, menus, open/save, dirty state | `swift/main.swift` | `AppDelegate`. File open via `application(_:open:)`; save via `evaluateJavaScript("window.MW.getMarkdown()")`. |
-| HTML shell + custom CSS (link color, layout) | `app/web/index.html` | Loads `bundle.js` / `bundle.css`. |
+| Editor behavior, JS↔Swift bridge | `src/editor.js` | Defines `window.MW`; posts `{type}` messages to native via `webkit.messageHandlers.bridge`. |
+| Inline equations | `src/latex.js` | Click-to-edit popup, adjacent-equation merging. Works around Crepe's broken LaTeX tooltip. |
+| Superscript/subscript | `src/supsub.js` | `sup`/`sub` marks + remark parse/stringify so they round-trip as `<sup>`/`<sub>`. |
+| Image alt text | `src/imageblock.js` | Patches Milkdown's `image-block` schema, which otherwise stores the aspect ratio in the markdown `alt` field and destroys the description on save. |
+| Code-block theme, language list | `src/codeblock.js` | CodeMirror highlight style; explicit `bash` entry. |
+| Native window, menus, open/save, dirty state | `swift/main.swift` | `AppDelegate` + `DocumentWindow`. File open via `application(_:open:)`; save via `evaluateJavaScript("window.MW.getMarkdown()")`. |
+| HTML shell + custom CSS (link color, layout, source view, equation popup) | `app/web/index.html` | Loads `bundle.js` / `bundle.css`. |
 | Bundler config / asset inlining | `build.mjs` | esbuild; non-CSS assets use `dataurl` loader. |
 | File-type associations, bundle id, version | `Info.plist` | `CFBundleDocumentTypes` + `UTImportedTypeDeclarations` for markdown. Bundle id: `com.josh.markwise`. |
 | Build orchestration | `build.sh` | Single source of truth for assembling the bundle. |
 
 ### JS↔Swift bridge contract
 
-- Swift → JS: `webView.evaluateJavaScript("window.MW.open(<json-string>)")` to load
-  a document; `"window.MW.getMarkdown()"` returns the current markdown (String).
-- JS → Swift: `window.webkit.messageHandlers.bridge.postMessage({type})` with
-  `type` ∈ `{ "ready", "opened", "changed" }`. Swift handles these in
-  `userContentController(_:didReceive:)`. `ready` triggers loading any file that
-  was requested before the editor finished loading (`pendingURL`).
+Swift → JS, all via `evaluateJavaScript`:
+
+| Call | Purpose |
+|---|---|
+| `window.MW.open(md, baseHref)` | Load a document. `baseHref` is the file's directory (or `null`), used to resolve relative image paths through a `<base>` element. |
+| `window.MW.getMarkdown()` | Current markdown (String). Returns the textarea's text while source view is open. |
+| `window.MW.markSaved()` | Re-baseline the dirty check after a successful write. |
+| `window.MW.setOutline(bool)` / `setSource(bool)` | Show/hide the outline sidebar and the raw-source view. Swift owns the state so menu checkmarks stay in sync. |
+| `window.MW.toggleMark(name)` | Toggle an inline mark (`"sup"` / `"sub"`) over the selection. |
+| `window.MW.setBaseURL(href)` | Re-point relative paths (used after Save As). |
+| `window.MW.setImageSrc(src)` / `insertImages(srcs, x, y)` | Replies to an `editImage` prompt; insert dropped/pasted images. |
+| `window.MW.primeSpellCheck()` | Walk the caret over every block so WebKit marks the whole document, not just the block the caret is in. |
+| `window.MW.nativeReply(id, value)` | Answers a request the editor made with an `id` (see `saveImage`). |
+
+JS → Swift: `postMessage({type, …})` with `type` ∈
+`{ "ready", "opened", "clean", "dirty", "openLink", "editImage", "saveImage" }`,
+handled in
+`userContentController(_:didReceive:)`. `ready` triggers loading any file
+requested before the editor finished loading (`pendingURL`); `clean`/`dirty`
+drive the window's edited state.
+
+`window.MW.__view()` returns the live ProseMirror view. It exists only so an
+automated harness can drive the document model; the app never calls it.
+
+### Note on Crepe internals
+
+`node_modules/@milkdown/crepe` ships its **TypeScript source** under `src/`.
+When something in the editor misbehaves, read that source rather than guessing -
+several of the LaTeX behaviours here are workarounds for things found in it
+(e.g. `plugin-block` hit-tests at the editor's horizontal centre, so inline
+equations used to steal the drag handle; the inline-LaTeX tooltip never mounts
+its editable field).
 
 ## Troubleshooting
 
@@ -157,7 +187,7 @@ Icon caches are sticky. To force a refresh: `touch Markwise.app`, and if needed
 - **`swiftc` not found**: install Xcode Command Line Tools (`xcode-select --install`).
 - **Window opens blank**: confirm `app/web/bundle.js` exists and is non-empty;
   re-run `node build.mjs`. The shell loads `Resources/web/index.html` via
-  `loadFileURL(_:allowingReadAccessTo:)` — all web assets must live under
+  `loadFileURL(_:allowingReadAccessTo:)` - all web assets must live under
   `Resources/web/`.
 - **Edits don't save**: saving calls JS `getMarkdown()` asynchronously; ensure the
   editor reported `ready`/`opened` first.

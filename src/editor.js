@@ -1,4 +1,4 @@
-// Markwise editor — wraps Milkdown Crepe (Typora-style WYSIWYG) and exposes a
+// Markwise editor - wraps Milkdown Crepe (Typora-style WYSIWYG) and exposes a
 // tiny bridge for the native Swift host to drive open/save.
 import { Crepe } from '@milkdown/crepe'
 import '@milkdown/crepe/theme/common/style.css'
@@ -6,9 +6,15 @@ import '@milkdown/crepe/theme/frame.css'
 import { $inputRule } from '@milkdown/kit/utils'
 import { InputRule } from '@milkdown/kit/prose/inputrules'
 import { linkSchema } from '@milkdown/kit/preset/commonmark'
-import { editorViewCtx } from '@milkdown/kit/core'
+import { editorViewCtx, remarkStringifyOptionsCtx, parserCtx, serializerCtx } from '@milkdown/kit/core'
 import { uploadConfig } from '@milkdown/kit/plugin/upload'
+import { blockConfig } from '@milkdown/kit/plugin/block'
+import { toggleMark } from '@milkdown/kit/prose/commands'
+import { TextSelection } from '@milkdown/kit/prose/state'
 import { codeMirrorTheme, codeLanguages } from './codeblock.js'
+import { mathPlugins, MATH_INLINE } from './latex.js'
+import { supSubPlugins, supSubStringifyHandlers } from './supsub.js'
+import { patchImageBlock } from './imageblock.js'
 
 // Read a File as a self-contained data: URL so dropped/pasted images persist in
 // the saved markdown (Crepe's default uploader uses ephemeral blob: URLs).
@@ -37,7 +43,7 @@ const linkInputRule = $inputRule((ctx) =>
 )
 
 // Convert `![alt](src "caption")` as you type. A standalone image (the whole
-// paragraph) becomes a block image — which supports a caption and resizing —
+// paragraph) becomes a block image - which supports a caption and resizing -
 // while an image typed among other text becomes an inline image.
 const imageInputRule = $inputRule(() =>
   new InputRule(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)$/, (state, match, start, end) => {
@@ -50,7 +56,7 @@ const imageInputRule = $inputRule(() =>
       $start.parentOffset === 0 &&
       end >= $start.end()
     if (standalone && schema.nodes['image-block']) {
-      const block = schema.nodes['image-block'].createAndFill({ src, caption: title || alt || '' })
+      const block = schema.nodes['image-block'].createAndFill({ src, alt, caption: title || '' })
       if (block) return state.tr.replaceRangeWith($start.before(), $start.after(), block)
     }
     const img = schema.nodes.image.create({ src, alt, title: title || null })
@@ -80,12 +86,12 @@ const taskListInputRule = $inputRule(() =>
 )
 
 let crepe = null
-// The live ProseMirror view (set after each create) — used for image editing.
+// The live ProseMirror view (set after each create) - used for image editing.
 let view = null
 // Position of the image whose source the native host is currently editing.
 let pendingImagePos = null
 // The document content as last loaded or saved. The document is "dirty" only
-// when the current markdown differs from this baseline — robust against the
+// when the current markdown differs from this baseline - robust against the
 // editor's own normalization and async setup transactions.
 let baseline = ''
 // True while a document is loading; setup events keep the baseline in sync.
@@ -100,13 +106,46 @@ function post(msg) {
   try {
     window.webkit?.messageHandlers?.bridge?.postMessage(msg)
   } catch (e) {
-    /* running outside the app shell (e.g. plain browser) — ignore */
+    /* running outside the app shell (e.g. plain browser) - ignore */
   }
+}
+
+// --- Request/response over the bridge ---------------------------------------
+// postMessage is one-way, so requests that need an answer (saving an image and
+// getting its path back) carry an id the host echoes to `nativeReply`.
+let requestSeq = 0
+const pendingRequests = new Map()
+
+function requestNative(type, payload) {
+  if (!window.webkit?.messageHandlers?.bridge) return Promise.resolve(null)
+  const id = ++requestSeq
+  return new Promise((resolve) => {
+    pendingRequests.set(id, resolve)
+    // Don't hang the paste forever if the host never answers.
+    setTimeout(() => {
+      if (pendingRequests.delete(id)) resolve(null)
+    }, 20000)
+    post({ type, id, ...payload })
+  })
+}
+
+function nativeReply(id, value) {
+  const resolve = pendingRequests.get(id)
+  if (!resolve) return
+  pendingRequests.delete(id)
+  resolve(value ?? null)
+}
+
+// Ask the host to write an image next to the document and hand back a path
+// relative to it. Returns null when there's nowhere to put it (an unsaved
+// document) or the write failed, in which case callers keep what they had.
+function saveImageBeside({ data, url, name }) {
+  return requestNative('saveImage', { data, url, name })
 }
 
 
 // Paste of a web image (copied from a browser) arrives as text/html containing
-// just an <img>, with no file — Milkdown's HTML→markdown paste drops it. Detect
+// just an <img>, with no file - Milkdown's HTML→markdown paste drops it. Detect
 // an image-only paste and insert the image node(s) ourselves. (Raw image files
 // arrive as clipboardData.files and are handled by the upload plugin instead.)
 document.addEventListener('paste', (e) => {
@@ -118,7 +157,7 @@ document.addEventListener('paste', (e) => {
   const parsed = new DOMParser().parseFromString(html, 'text/html')
   const imgs = parsed.querySelectorAll('img[src]')
   const text = (parsed.body.textContent || '').trim()
-  if (!imgs.length || text) return // not an image-only paste — let Milkdown handle it
+  if (!imgs.length || text) return // not an image-only paste - let Milkdown handle it
   const srcs = [...imgs].map((img) => img.getAttribute('src')).filter(Boolean)
   if (!srcs.length) return
   e.preventDefault()
@@ -138,7 +177,7 @@ function insertImagesAt(srcs, pos) {
   view.dispatch(view.state.tr.replaceWith(at, at, nodes).scrollIntoView())
 }
 
-function setDocumentBase(baseURL) {
+function setBaseURL(baseURL) {
   if (!documentBase) return false
   if (baseURL == null || baseURL === '') {
     documentBase.href = shellBaseURL
@@ -160,9 +199,21 @@ function setDocumentBase(baseURL) {
 
 // Open (or replace) the document with the given markdown text. The optional
 // base URL lets relative links and images resolve beside the Markdown file.
-async function open(markdown, baseURL = null) {
+// Open (or replace) the document with the given markdown text. `baseHref` is
+// the directory of the file it came from, if any.
+//
+// Calls are queued: building an editor is asynchronous, and two overlapping
+// opens would race over `crepe`/`view` and could leave the visible editor and
+// the one we hold references to being different objects.
+let openQueue = Promise.resolve()
+function open(markdown, baseHref) {
+  openQueue = openQueue.then(() => openNow(markdown, baseHref)).catch(() => {})
+  return openQueue
+}
+
+async function openNow(markdown, baseHref) {
   const root = document.getElementById('app')
-  setDocumentBase(baseURL)
+  if (baseHref !== undefined) setBaseURL(baseHref)
   loading = true
   view = null
   if (crepe) {
@@ -192,12 +243,36 @@ async function open(markdown, baseURL = null) {
   })
   crepe.editor.use(linkInputRule)
   crepe.editor.use(taskListInputRule)
+  // Inline-equation editing, adjacent-equation merging (see src/latex.js).
+  mathPlugins({ isLoading: () => loading }).forEach((p) => crepe.editor.use(p))
+  // <sup>/<sub> marks (see src/supsub.js).
+  crepe.editor.use(supSubPlugins)
+  crepe.editor.config((ctx) => {
+    ctx.update(remarkStringifyOptionsCtx, (prev) => ({
+      ...prev,
+      handlers: { ...(prev?.handlers ?? {}), ...supSubStringifyHandlers },
+    }))
+  })
   // Typing `![alt](src)` doesn't create an image by default (commonmark ships an
   // image input rule but doesn't register it). Use our own, which prefers a
   // block image (caption + resize) for a standalone image.
   crepe.editor.use(imageInputRule)
   // Drag-and-drop or paste image files -> embed as data: URLs so they survive a
   // save (web images copied with HTML still paste as their URL via ProseMirror).
+  // The block (+/drag) handle hit-tests at the horizontal centre of the editor,
+  // so an inline node sitting under that line - typically an equation - wins
+  // over the paragraph and the handle jumps to it. Only ever anchor to blocks.
+  // Stop image alt text being overwritten with the aspect ratio.
+  crepe.editor.config(patchImageBlock)
+  crepe.editor.config((ctx) => {
+    ctx.update(blockConfig.key, (prev) => ({
+      ...prev,
+      filterNodes: ($pos, node) => {
+        if (node?.type.isInline) return false
+        return prev.filterNodes ? prev.filterNodes($pos, node) : true
+      },
+    }))
+  })
   crepe.editor.config((ctx) => {
     ctx.update(uploadConfig.key, (prev) => ({
       ...prev,
@@ -209,7 +284,10 @@ async function open(markdown, baseURL = null) {
           const file = files.item(i)
           if (!file || !file.type.startsWith('image/')) continue
           try {
-            const node = type.createAndFill({ src: await fileToDataURL(file) })
+            const data = await fileToDataURL(file)
+            // Prefer a file on disk beside the document; fall back to embedding.
+            const src = (await saveImageBeside({ data, name: file.name })) || data
+            const node = type.createAndFill({ src, alt: '' })
             if (node) nodes.push(node)
           } catch (e) { /* skip unreadable file */ }
         }
@@ -237,30 +315,280 @@ async function open(markdown, baseURL = null) {
       view = ctx.get(editorViewCtx)
       const linkMark = view.state.schema.marks.link
       if (linkMark) linkMark.spec.inclusive = false
-    } catch (e) { /* view not ready — ignore */ }
+      // Crepe marks inline equations draggable, which makes WebKit begin a drag
+      // instead of a text selection when you drag across one. Dragging a lone
+      // equation is far rarer than selecting a sentence containing it.
+      const math = view.state.schema.nodes[MATH_INLINE]
+      if (math) math.spec.draggable = false
+    } catch (e) { /* view not ready - ignore */ }
   })
+  // Focus the moment the editor exists, not after the settle below: animation
+  // frames don't run on a schedule you can rely on while the window is still
+  // being put on screen, and waiting for them left the document visible but
+  // unfocused for as much as several seconds - it looks ready, but typing goes
+  // nowhere.
+  try { view && view.focus() } catch (e) { /* noop */ }
+
   baseline = crepe.getMarkdown()
   // Let async setup transactions (e.g. code-block features) settle, folding
-  // them into the baseline, before we start reporting user edits.
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    baseline = crepe.getMarkdown()
-    loading = false
-    post({ type: 'opened' })
-    post({ type: 'clean' })
-    scheduleOutline()
-    // Focus the editor so you can start typing immediately (Typora-style).
-    try { view && view.focus() } catch (e) { /* noop */ }
-  }))
+  // them into the baseline, before we start reporting user edits. Callers await
+  // this, so anything they post afterwards lands after the "clean" below.
+  await settled()
+  baseline = crepe.getMarkdown()
+  loading = false
+  post({ type: 'opened' })
+  post({ type: 'clean' })
+  scheduleOutline()
+  // If source view is open (e.g. a file was opened, or reloaded from disk,
+  // while showing it), show the new document's markdown rather than the old.
+  if (sourceVisible && sourceEl) {
+    sourceOpenText = baseline
+    sourceEl.value = baseline
+  }
+  try { view && view.focus() } catch (e) { /* noop */ }
 }
 
-// Return the current document as markdown (called synchronously by the host on save).
+/// Wait for the editor's own setup transactions to land - two animation frames
+/// normally, but a timer wins if frames aren't being served, which is the case
+/// while a window is still coming up. Waiting on frames alone stalled opening a
+/// document for seconds.
+function settled(fallbackMs = 120) {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      resolve()
+    }
+    requestAnimationFrame(() => requestAnimationFrame(finish))
+    setTimeout(finish, fallbackMs)
+  })
+}
+
+// Return the current document as markdown (called synchronously by the host on
+// save). In source view the textarea is the document, so ⌘S saves what's shown.
 function getMarkdown() {
+  if (sourceVisible) return sourceEl ? sourceEl.value : ''
   return crepe ? crepe.getMarkdown() : ''
 }
 
 // Called by the host after a successful save: the current content is now clean.
 function markSaved() {
   if (crepe) baseline = crepe.getMarkdown()
+}
+
+// --- Merging ----------------------------------------------------------------
+// Round markdown through the parser and serializer without disturbing the open
+// document. Used before a three-way merge: the editor rewrites markdown into its
+// own dialect (list markers, wrapping), so comparing raw file text against
+// editor output would report those rewrites as edits and manufacture conflicts
+// that the user never made. Normalising every side first leaves only real edits.
+function normalize(text) {
+  if (!crepe || typeof text !== 'string') return text ?? ''
+  try {
+    return crepe.editor.action((ctx) => {
+      const parser = ctx.get(parserCtx)
+      const serializer = ctx.get(serializerCtx)
+      const doc = parser(text)
+      return doc ? serializer(doc) : text
+    })
+  } catch (e) {
+    return text
+  }
+}
+
+/// The three sides a three-way merge needs, all in the same dialect:
+/// the document as it was opened, the document now, and the file on disk.
+function mergeInputs(baseText, diskText) {
+  return { base: normalize(baseText), mine: getMarkdown(), theirs: normalize(diskText) }
+}
+
+// --- Spell checking ---------------------------------------------------------
+// WebKit only spell-checks the block the caret is in (or text it has watched
+// being edited), so a freshly opened document carries no marks until you visit
+// each paragraph yourself. There's no API to check a document outright, but
+// moving the caret through a block provokes the same per-block check.
+//
+// Only the blocks on screen are primed, and only once things have settled.
+// Priming the whole document meant one caret move per animation frame for every
+// block in the file - four seconds of them on a 240-block document - each one
+// putting the scroll position back where it started, which reads as the window
+// refusing to scroll for the first few seconds after opening.
+const primedBlocks = new WeakSet()
+let primeTimer = null
+let primeRunning = false
+let primeInterrupted = false
+
+// Any sign of the reader doing something stops the walk: their caret and their
+// scroll position win over a background nicety. The timestamp also tells a
+// user's scroll apart from one the primer caused itself.
+let lastUserInputAt = 0
+// Where the caret was before the walk borrowed it, so a keystroke that arrives
+// mid-walk can put it back first.
+let primeOriginalPos = null
+
+for (const type of ['wheel', 'keydown', 'mousedown', 'touchstart']) {
+  document.addEventListener(type, (e) => {
+    lastUserInputAt = Date.now()
+    if (!primeRunning) return
+    primeInterrupted = true
+    // A keystroke would otherwise be typed wherever the walk had moved the
+    // caret to. This listener runs before the editor handles the key, so
+    // putting the caret back here means the character lands where the reader
+    // left it. (A click sets its own position, so it needs no help.)
+    if (e.type === 'keydown' && view && primeOriginalPos != null) {
+      try {
+        const at = Math.min(primeOriginalPos, view.state.doc.content.size)
+        view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, at)))
+      } catch (err) { /* document moved on - leave the selection be */ }
+    }
+  }, { capture: true, passive: true })
+}
+
+function schedulePrime(delay = 200) {
+  clearTimeout(primeTimer)
+  primeTimer = setTimeout(primeVisibleBlocks, delay)
+}
+
+function restoreScroll(scroller, value) {
+  if (!scroller || scroller.scrollTop === value) return
+  scroller.scrollTop = value
+}
+
+function primeVisibleBlocks() {
+  if (!view || sourceVisible || primeRunning) return
+
+  const scroller = document.getElementById('app')
+  const viewportBottom = scroller ? scroller.clientHeight : window.innerHeight
+  const targets = []
+  view.state.doc.descendants((node, pos) => {
+    // Never step into a code block: there's nothing to spell-check in code, and
+    // moving the caret there hands focus to the embedded CodeMirror editor,
+    // which then swallows shortcuts like ⌘/ that belong to the app.
+    if (node.type.name === 'code_block' || node.type.spec.code) return false
+    if (!node.isTextblock) return true
+    if (node.textContent.trim() && !primedBlocks.has(node)) {
+      const dom = view.nodeDOM(pos)
+      const rect = dom && dom.getBoundingClientRect ? dom.getBoundingClientRect() : null
+      if (rect && rect.bottom > 0 && rect.top < viewportBottom) targets.push({ pos, node })
+    }
+    return false // no need to walk inside a text block
+  })
+  if (!targets.length) return
+
+  primeRunning = true
+  primeInterrupted = false
+  const original = view.state.selection
+  primeOriginalPos = original.from
+  const scrollTop = scroller ? scroller.scrollTop : 0
+  let i = 0
+
+  const finish = () => {
+    primeRunning = false
+    primeOriginalPos = null
+    if (primeInterrupted || !view) return // the reader took over; leave them be
+    try {
+      const at = Math.min(original.from, view.state.doc.content.size)
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, at)))
+    } catch (e) { /* document moved on - leave the selection be */ }
+    // Putting the caret back reveals it, which scrolls the view to wherever it
+    // was - the top, for a freshly opened document. Undo that.
+    restoreScroll(scroller, scrollTop)
+  }
+
+  const step = () => {
+    if (primeInterrupted || !view || i >= targets.length) return finish()
+    const target = targets[i++]
+    try {
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, target.pos + 1)))
+      primedBlocks.add(target.node)
+    } catch (e) { /* position no longer resolves - skip it */ }
+    // The targets are already on screen, so this is normally a no-op; it only
+    // catches a block that was partly below the fold.
+    if (!primeInterrupted) restoreScroll(scroller, scrollTop)
+    requestAnimationFrame(step)
+  }
+  requestAnimationFrame(step)
+}
+
+/// Called by the host once a document has finished loading.
+function primeSpellCheck() {
+  schedulePrime(150)
+}
+
+// Check whatever the reader scrolls into view, once scrolling stops. Only a
+// scroll the reader actually drove counts: the primer's own scroll corrections
+// raise scroll events too, and acting on those would loop - correct, scroll,
+// prime, correct - walking the document on its own.
+{
+  const scroller = document.getElementById('app')
+  if (scroller) {
+    scroller.addEventListener('scroll', () => {
+      if (Date.now() - lastUserInputAt > 1200) return
+      schedulePrime(300)
+    }, { passive: true })
+  }
+}
+
+// --- Markdown source view ---------------------------------------------------
+// A plain textarea over the rendered document, so you can see and edit the raw
+// markdown. Toggled from the View menu (⌘/).
+let sourceVisible = false
+let sourceEl = null
+// The markdown as it stood when source view opened, to spot real edits.
+let sourceOpenText = ''
+
+function ensureSourceEl() {
+  if (sourceEl) return sourceEl
+  sourceEl = document.getElementById('source')
+  if (sourceEl) {
+    sourceEl.addEventListener('input', () => {
+      post({ type: sourceEl.value === baseline ? 'clean' : 'dirty' })
+    })
+  }
+  return sourceEl
+}
+
+async function setSource(visible) {
+  const el = ensureSourceEl()
+  if (!el || !!visible === sourceVisible) return sourceVisible
+
+  if (visible) {
+    sourceOpenText = getMarkdown()
+    el.value = sourceOpenText
+    sourceVisible = true
+    document.body.classList.add('source-open')
+    hideBlockHandle()
+    el.focus()
+    el.setSelectionRange(0, 0)
+    return sourceVisible
+  }
+
+  const text = el.value
+  sourceVisible = false
+  document.body.classList.remove('source-open')
+  if (text !== sourceOpenText) {
+    // Rebuild the rendered document from the edited source, keeping the
+    // unsaved-changes state that the edit implies.
+    const dirty = text !== baseline
+    await open(text)
+    if (dirty) post({ type: 'dirty' })
+  } else {
+    try { view && view.focus() } catch (e) { /* noop */ }
+  }
+  return sourceVisible
+}
+
+// --- Inline formatting ------------------------------------------------------
+// Toggle a mark by name over the selection (the native Format menu drives this
+// for superscript/subscript).
+function toggleTextMark(name) {
+  if (!view) return false
+  const type = view.state.schema.marks[name]
+  if (!type) return false
+  const applied = toggleMark(type)(view.state, view.dispatch)
+  view.focus()
+  return applied
 }
 
 // --- Block handle: keep it from getting stranded on layout changes ----------
@@ -425,38 +753,57 @@ function setImageSrc(newSrc) {
   )
 }
 
-// Insert one or more images (data URLs / paths) at a drop point (or the cursor).
-// Called by the native host after a file drag-and-drop, and by the web-image
-// paste handler.
-function insertImages(srcs, x, y) {
+// Copy an image that came from elsewhere - a web page, or an embedded blob -
+// to a file beside the document, so the markdown ends up with a relative path
+// instead of a network dependency or a base64 blob. Anything already local, or
+// that can't be saved, is passed through untouched.
+async function localizeImageSrc(src) {
+  if (typeof src !== 'string' || !src) return src
+  if (/^https?:/i.test(src)) return (await saveImageBeside({ url: src })) || src
+  if (/^data:image\//i.test(src)) return (await saveImageBeside({ data: src })) || src
+  return src
+}
+
+// Insert one or more images (URLs / data URLs / paths) at a drop point (or the
+// cursor). Called by the native host after a file drag-and-drop, and by the
+// web-image paste handler.
+async function insertImages(srcs, x, y) {
   if (!view) return
   let pos = null
   if (typeof x === 'number' && typeof y === 'number') {
     const at = view.posAtCoords({ left: x, top: y })
     if (at) pos = at.pos
   }
-  insertImagesAt(srcs, pos)
+  const localized = await Promise.all((srcs || []).map(localizeImageSrc))
+  insertImagesAt(localized, pos)
 }
 
 window.MW = {
-  open,
-  getMarkdown,
-  markSaved,
-  setDocumentBase,
-  setOutline,
-  toggleOutline,
-  showSearch,
-  hideSearch,
-  findStep,
-  setFindResult,
-  setImageSrc,
-  insertImages,
+  open, getMarkdown, markSaved, setOutline, toggleOutline, setImageSrc, insertImages,
+  toggleMark: toggleTextMark,
+  setSource, setBaseURL, primeSpellCheck, nativeReply, mergeInputs,
+  showSearch, hideSearch, findStep, setFindResult,
+  // Test hook: lets the offscreen-WKWebView harness drive the document model
+  // directly. Not used by the app itself.
+  __view: () => view,
 }
 
 // Double-click an image to change the file/URL it points to (handy for fixing
 // broken paths). The native host presents the picker and replies via setImageSrc.
 document.addEventListener('dblclick', (e) => {
   if (!view) return
+  // Double-clicking a link opens it, the way ⌘-click does. (Single click still
+  // just places the cursor, so the link text stays editable.)
+  const link = e.target.closest && e.target.closest('a[href]')
+  if (link) {
+    const href = link.getAttribute('href')
+    if (href) {
+      e.preventDefault()
+      e.stopPropagation()
+      post({ type: 'openLink', href })
+      return
+    }
+  }
   // Match the image itself or its node-view container (a real click can land on
   // the selection overlay/padding, not the <img>).
   const el = e.target.closest &&
@@ -495,6 +842,11 @@ document.addEventListener('click', (e) => {
 // Hide the block handle while scrolling so it doesn't lag behind the content.
 document.getElementById('app')?.addEventListener('scroll', hideBlockHandle, { passive: true })
 
-// Tell the host the bridge is available. The host performs exactly one initial
-// open, either with a requested file or with an empty document.
+// Tell the host the bridge is available.
 post({ type: 'ready' })
+// Only build an empty editor when nothing is on its way. The host sets this
+// flag before the page loads if the window was opened for a file: otherwise we
+// would build an editor here and immediately tear it down when the file arrived
+// a moment later, which wastes the work and leaves focus pointing at a
+// destroyed view - the window looks ready while typing goes nowhere.
+if (!window.MW_PENDING_DOC) open('')

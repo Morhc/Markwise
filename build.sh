@@ -67,13 +67,10 @@ build_macos() {
     cp app/web/index.html app/web/bundle.js app/web/bundle.css "$resources/web/"
     [ -f app/AppIcon.icns ] && cp app/AppIcon.icns "$resources/AppIcon.icns" || true
 
-    echo "==> Registering with Launch Services"
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-        -f "$app" || true
-
     echo
     echo "Built: $app"
-    echo "Open it with: open \"$app\""
+    echo "Test it with: open \"$app\""
+    echo "Install it with: ./install.sh"
 }
 
 linux_electron_arch() {

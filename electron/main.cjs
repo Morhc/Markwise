@@ -244,6 +244,9 @@ class DocumentWindow {
         this.findQuery = ''
         this.window.webContents.stopFindInPage('clearSelection')
         break
+      case 'saveImage':
+        await this.execute(`window.MW.nativeReply(${message.id}, null)`)
+        break
       default:
         break
     }
@@ -286,7 +289,7 @@ class DocumentWindow {
       this.filePath = path.resolve(destination)
       this.setDirty(false)
       await this.execute('window.MW.markSaved()')
-      await this.execute(`window.MW.setDocumentBase(${JSON.stringify(documentBaseUrl(this.filePath))})`)
+      await this.execute(`window.MW.setBaseURL(${JSON.stringify(documentBaseUrl(this.filePath))})`)
       this.updateTitle()
       return true
     } catch (error) {

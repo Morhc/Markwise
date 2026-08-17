@@ -10,7 +10,8 @@
     "test": "node test/electron-files.test.cjs"
   },
   "dependencies": {
-    "@milkdown/crepe": "^7.6.0"
+    "@milkdown/crepe": "^7.6.0",
+    "katex": "^0.17.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.1"

@@ -28,6 +28,13 @@ function sanitizeMessage(message) {
     }
   }
 
+  // Electron currently keeps pasted images embedded. Acknowledge the newer
+  // shared renderer request so it can fall back immediately instead of waiting
+  // for the native-image localization timeout used by the macOS host.
+  if (type === 'saveImage' && Number.isSafeInteger(message.id) && message.id > 0) {
+    return { type, id: message.id }
+  }
+
   return null
 }
 
@@ -41,3 +48,7 @@ const bridge = Object.freeze({
 contextBridge.exposeInMainWorld('webkit', Object.freeze({
   messageHandlers: Object.freeze({ bridge }),
 }))
+
+// The Electron host owns the initial open and responds to the renderer's ready
+// message, so suppress the renderer's standalone empty-document bootstrap.
+contextBridge.exposeInMainWorld('MW_PENDING_DOC', true)

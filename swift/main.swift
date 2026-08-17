@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import UniformTypeIdentifiers
 
 // MARK: - App entry
 
@@ -20,18 +21,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set once we've opened at least one file/window during launch.
     var didCreateInitialWindow = false
 
+    /// A window created at launch, before we know whether a file is coming.
+    ///
+    /// Loading the page is the slow part of starting up - most of it is WebKit
+    /// spawning its content process - and it used to begin only once the
+    /// open-file event had been delivered and the window built, so none of it
+    /// overlapped. Starting it here runs that work alongside the rest of launch;
+    /// whichever document turns up first claims this window.
+    var prewarmedWindow: DocumentWindow?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        prewarmedWindow = makeDocumentWindow(expectsDocument: true)
+    }
+
+    /// Take the pre-warmed window if it's still going spare.
+    func claimPrewarmedWindow() -> DocumentWindow? {
+        guard let warm = prewarmedWindow, warm.currentURL == nil, warm.pendingURL == nil else { return nil }
+        prewarmedWindow = nil
+        return warm
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // WebKit reads its continuous-spell-check state from this default, but
+        // only from the persistent domain - a `register(defaults:)` fallback is
+        // ignored. Seed it just once, so spell checking is on out of the box and
+        // a later toggle from Edit ▸ Spelling still wins.
+        let spellKey = "WebContinuousSpellCheckingEnabled"
+        if UserDefaults.standard.object(forKey: spellKey) == nil {
+            UserDefaults.standard.set(true, forKey: spellKey)
+        }
+        applyAppearance()
         buildMenu()
-        // If launched without a file to open, show one empty window.
+        installFormatKeyMonitor()
+        // Nothing to open: the window waiting at launch becomes the empty one.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if self.documents.isEmpty { self.newDocument(nil) }
+            if let warm = self.claimPrewarmedWindow() { warm.openEmptyDocument() }
+            else if self.documents.isEmpty { self.newDocument(nil) }
         }
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
+    }
+
+    /// Quitting shouldn't throw away work any more than closing a window does.
+    ///
+    /// Saving can involve a sheet (an untitled document needs a destination) and
+    /// the editor answers asynchronously, so the decision can't be made inline:
+    /// the reply comes back through `NSApp.reply(toApplicationShouldTerminate:)`.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let unsaved = documents.filter { $0.isDirty }
+        guard !unsaved.isEmpty else { return .terminateNow }
+
+        // With several documents outstanding, offer the usual macOS shortcut of
+        // discarding the lot rather than walking through every one.
+        if unsaved.count > 1 {
+            let alert = NSAlert()
+            alert.messageText = "You have unsaved changes in \(unsaved.count) documents."
+            alert.informativeText = "Do you want to review them before quitting?"
+            alert.addButton(withTitle: "Review Changes…")
+            alert.addButton(withTitle: "Discard Changes")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: break
+            case .alertSecondButtonReturn: return .terminateNow
+            default: return .terminateCancel
+            }
+        }
+
+        reviewUnsaved(Array(unsaved))
+        return .terminateLater
+    }
+
+    /// Walk the unsaved documents one at a time; cancelling any one calls the
+    /// whole quit off, leaving the rest untouched.
+    private func reviewUnsaved(_ remaining: [DocumentWindow]) {
+        var rest = remaining
+        guard !rest.isEmpty else {
+            NSApp.reply(toApplicationShouldTerminate: true)
+            return
+        }
+        let doc = rest.removeFirst()
+        doc.confirmDiscardIfNeeded { [weak self] proceed in
+            guard proceed else {
+                NSApp.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            self?.reviewUnsaved(rest)
+        }
     }
 
     // Files opened via double-click, "Open With", or the default handler.
@@ -50,8 +129,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @discardableResult
-    func makeDocumentWindow() -> DocumentWindow {
-        let doc = DocumentWindow(app: self)
+    func makeDocumentWindow(openURL: URL? = nil, expectsDocument: Bool = false) -> DocumentWindow {
+        let doc = DocumentWindow(app: self, openURL: openURL, expectsDocument: expectsDocument)
         documents.append(doc)
         // Cascade so multiple windows don't stack exactly on top of each other.
         cascadePoint = doc.window.cascadeTopLeft(from: cascadePoint)
@@ -65,7 +144,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             existing.window.makeKeyAndOrderFront(nil)
             return
         }
-        makeDocumentWindow().requestOpen(url)
+        if let warm = claimPrewarmedWindow() {
+            warm.requestOpen(url) // already loading; hand it the file
+            return
+        }
+        // Hand the URL over at construction so the page knows a document is
+        // coming before it boots, and builds its editor once rather than twice.
+        makeDocumentWindow(openURL: url)
     }
 
     func documentDidClose(_ doc: DocumentWindow) {
@@ -82,7 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedFileTypes = ["md", "markdown", "mdown", "mkd", "mdwn", "mkdn", "text", "txt"]
+        panel.allowedContentTypes = ["md", "markdown", "mdown", "mkd", "mdwn", "mkdn", "text", "txt"]
+            .compactMap { UTType(filenameExtension: $0) }
         panel.begin { [weak self] response in
             guard let self, response == .OK else { return }
             for url in panel.urls { self.openInWindow(url) }
@@ -93,9 +179,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func saveDocument(_ sender: Any?) { activeDocument?.save() }
     @objc func saveDocumentAs(_ sender: Any?) { activeDocument?.saveAs() }
     @objc func toggleOutline(_ sender: Any?) { activeDocument?.toggleOutline() }
+    @objc func toggleSourceView(_ sender: Any?) { activeDocument?.toggleSourceView() }
+    @objc func reloadFromDisk(_ sender: Any?) { activeDocument?.reloadFromDisk() }
+    @objc func showInFinder(_ sender: Any?) { activeDocument?.showInFinder() }
     @objc func performFind(_ sender: Any?) { activeDocument?.showSearch() }
     @objc func findNext(_ sender: Any?) { activeDocument?.findNext() }
     @objc func findPrevious(_ sender: Any?) { activeDocument?.findPrevious() }
+    @objc func toggleSuperscript(_ sender: Any?) { activeDocument?.toggleMark("sup") }
+    @objc func toggleSubscript(_ sender: Any?) { activeDocument?.toggleMark("sub") }
 
     // Disable document actions when there's no open window.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -103,11 +194,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)),
              #selector(performFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)):
             return activeDocument != nil
+        case #selector(toggleSuperscript(_:)), #selector(toggleSubscript(_:)):
+            // Formatting applies to the rendered document, not the raw source.
+            return activeDocument != nil && !(activeDocument?.sourceVisible ?? false)
+        case #selector(reloadFromDisk(_:)), #selector(showInFinder(_:)):
+            // An untitled document has no file to reload from or reveal.
+            return activeDocument?.currentURL != nil
         case #selector(toggleOutline(_:)):
             item.state = (activeDocument?.outlineVisible ?? false) ? .on : .off
             return activeDocument != nil
+        case #selector(toggleSourceView(_:)):
+            item.state = (activeDocument?.sourceVisible ?? false) ? .on : .off
+            return activeDocument != nil
+        case #selector(useSystemAppearance(_:)):
+            item.state = appearancePreference == "system" ? .on : .off
+            return true
+        case #selector(useLightAppearance(_:)):
+            item.state = appearancePreference == "light" ? .on : .off
+            return true
+        case #selector(useDarkAppearance(_:)):
+            item.state = appearancePreference == "dark" ? .on : .off
+            return true
         default:
             return true
+        }
+    }
+
+    // MARK: Appearance
+
+    static let appearanceKey = "MWAppearance"
+
+    /// "system", "light" or "dark".
+    var appearancePreference: String {
+        UserDefaults.standard.string(forKey: AppDelegate.appearanceKey) ?? "system"
+    }
+
+    /// Setting the application's appearance is all that's needed: the window
+    /// chrome follows it, and WebKit reports it to the page as
+    /// `prefers-color-scheme`, which is what the editor's dark palette keys off.
+    /// A nil appearance means "whatever the system is doing".
+    func applyAppearance() {
+        switch appearancePreference {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: NSApp.appearance = nil
+        }
+    }
+
+    func setAppearance(_ value: String) {
+        UserDefaults.standard.set(value, forKey: AppDelegate.appearanceKey)
+        applyAppearance()
+    }
+
+    @objc func useSystemAppearance(_ sender: Any?) { setAppearance("system") }
+    @objc func useLightAppearance(_ sender: Any?) { setAppearance("light") }
+    @objc func useDarkAppearance(_ sender: Any?) { setAppearance("dark") }
+
+    /// Catch the super/subscript shortcuts ourselves.
+    ///
+    /// ⌃⌘+ has to be typed as ⌃⌘⇧= on most layouts, and AppKit's key-equivalent
+    /// matching won't accept a shifted punctuation key equivalent however the
+    /// modifier mask is written - the menu item fires from the menu but never
+    /// from the keyboard. Matching the key here accepts the shifted and
+    /// unshifted forms of both shortcuts, so ⌃⌘+ and ⌃⌘= are equally fine.
+    func installFormatKeyMonitor() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard flags.contains(.command), flags.contains(.control), !flags.contains(.option),
+                  let doc = self?.activeDocument, !doc.sourceVisible
+            else { return event }
+
+            switch event.charactersIgnoringModifiers {
+            case "+", "=":
+                doc.toggleMark("sup")
+                return nil
+            case "_", "-":
+                doc.toggleMark("sub")
+                return nil
+            default:
+                return event
+            }
         }
     }
 
@@ -139,6 +305,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveAs.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(saveAs)
         fileMenu.addItem(NSMenuItem.separator())
+        // Pick up edits made to the file by another program.
+        fileMenu.addItem(withTitle: "Reload from Disk", action: #selector(reloadFromDisk(_:)), keyEquivalent: "r")
+        // ⌥⌘R, the same shortcut VS Code uses for Reveal in Finder (⌘R is taken).
+        let reveal = NSMenuItem(title: "Show in Finder", action: #selector(showInFinder(_:)), keyEquivalent: "r")
+        reveal.keyEquivalentModifierMask = [.command, .option]
+        fileMenu.addItem(reveal)
+        fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
 
         // Edit menu (standard responder-chain actions so the editor handles them)
@@ -162,6 +335,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         findPrev.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(findPrev)
 
+        // Spelling: WKWebView implements these standard responder-chain actions,
+        // so the system spell checker works with no extra wiring.
+        editMenu.addItem(NSMenuItem.separator())
+        let spellingItem = NSMenuItem(title: "Spelling and Grammar", action: nil, keyEquivalent: "")
+        let spellingMenu = NSMenu(title: "Spelling and Grammar")
+        spellingItem.submenu = spellingMenu
+        spellingMenu.addItem(withTitle: "Show Spelling and Grammar",
+                             action: Selector(("showGuessPanel:")), keyEquivalent: ":")
+        spellingMenu.addItem(withTitle: "Check Document Now",
+                             action: Selector(("checkSpelling:")), keyEquivalent: ";")
+        spellingMenu.addItem(NSMenuItem.separator())
+        spellingMenu.addItem(withTitle: "Check Spelling While Typing",
+                             action: Selector(("toggleContinuousSpellChecking:")), keyEquivalent: "")
+        spellingMenu.addItem(withTitle: "Check Grammar With Spelling",
+                             action: Selector(("toggleGrammarChecking:")), keyEquivalent: "")
+        spellingMenu.addItem(withTitle: "Correct Spelling Automatically",
+                             action: Selector(("toggleAutomaticSpellingCorrection:")), keyEquivalent: "")
+        editMenu.addItem(spellingItem)
+
+        // Format menu - markdown has no superscript/subscript syntax, so these
+        // write the HTML tags that GitHub, Pandoc and Typora all understand.
+        let formatMenuItem = NSMenuItem()
+        mainMenu.addItem(formatMenuItem)
+        let formatMenu = NSMenu(title: "Format")
+        formatMenuItem.submenu = formatMenu
+        // Shown as ⌃⌘+, matching Pages. AppKit won't actually match a shifted
+        // punctuation key equivalent here whichever way the mask is written, so
+        // the key handling is done by the monitor in `installFormatKeyMonitor`;
+        // this key equivalent is for display. Subscript needs no Shift and
+        // matches on its own.
+        let superscript = NSMenuItem(title: "Superscript", action: #selector(toggleSuperscript(_:)), keyEquivalent: "+")
+        superscript.keyEquivalentModifierMask = [.command, .control]
+        formatMenu.addItem(superscript)
+        let subscriptItem = NSMenuItem(title: "Subscript", action: #selector(toggleSubscript(_:)), keyEquivalent: "-")
+        subscriptItem.keyEquivalentModifierMask = [.command, .control]
+        formatMenu.addItem(subscriptItem)
+
         // View menu
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
@@ -171,6 +381,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let outline = NSMenuItem(title: "Show Document Outline", action: #selector(toggleOutline(_:)), keyEquivalent: "o")
         outline.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(outline)
+        // Raw markdown, editable, on ⌘/.
+        viewMenu.addItem(withTitle: "Show Markdown Source", action: #selector(toggleSourceView(_:)), keyEquivalent: "/")
+        viewMenu.addItem(NSMenuItem.separator())
+
+        // Appearance: follow the system by default, or pin light/dark.
+        let appearanceItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
+        let appearanceMenu = NSMenu(title: "Appearance")
+        appearanceItem.submenu = appearanceMenu
+        appearanceMenu.addItem(withTitle: "Match System", action: #selector(useSystemAppearance(_:)), keyEquivalent: "")
+        appearanceMenu.addItem(withTitle: "Light", action: #selector(useLightAppearance(_:)), keyEquivalent: "")
+        appearanceMenu.addItem(withTitle: "Dark", action: #selector(useDarkAppearance(_:)), keyEquivalent: "")
+        viewMenu.addItem(appearanceItem)
         viewMenu.addItem(NSMenuItem.separator())
         // Full screen on ⌃⌘F so it doesn't clash with Find (⌘F).
         let fullScreen = NSMenuItem(title: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
@@ -244,11 +466,28 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     var webReady = false
     /// Whether the document outline sidebar is showing (off by default).
     var outlineVisible = false
+    /// Whether the raw-markdown source view is showing (off by default).
+    var sourceVisible = false
     /// A file requested before the editor finished loading.
     var pendingURL: URL?
+    /// The file's modification date when we last read or wrote it, so we can
+    /// tell "changed on disk" apart from "unchanged".
+    var lastKnownModification: Date?
+    /// The text as last read or written - the common ancestor for a three-way
+    /// merge when the file and the editor have both moved on.
+    var lastSyncedText: String?
+    /// Whether a document is expected, so the page shouldn't build an empty
+    /// editor it would only have to throw away.
+    var expectsDocument = false
+    /// Set when nothing turned up and the window should just show a blank document.
+    var wantsEmptyDocument = false
 
-    init(app: AppDelegate) {
+    init(app: AppDelegate, openURL: URL? = nil, expectsDocument: Bool = false) {
         self.app = app
+        // Set before the page loads: the editor checks it to decide whether to
+        // build an empty document, which it would only have to throw away.
+        self.pendingURL = openURL
+        self.expectsDocument = expectsDocument || openURL != nil
         super.init()
         buildWindow()
         loadEditor()
@@ -274,11 +513,32 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "bridge")
+        if expectsDocument {
+            // Runs before the bundle does, so the editor can skip building an
+            // empty document it is about to replace.
+            config.userContentController.addUserScript(WKUserScript(
+                source: "window.MW_PENDING_DOC = true",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            ))
+        }
 
         let editorWebView = EditorWebView(frame: frame, configuration: config)
         editorWebView.onImageFilesDropped = { [weak self] urls, point in
             guard let self else { return false }
-            let srcs = urls.compactMap { self.fileToDataURI($0) }
+            // Copy each dropped file next to the document and reference it
+            // relatively; embed it only when there's no document folder yet.
+            let srcs: [String] = urls.compactMap { url in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                if let docURL = self.currentURL,
+                   let rel = self.writeImage(data,
+                                             preferredName: url.lastPathComponent,
+                                             fallbackExt: url.pathExtension.isEmpty ? "png" : url.pathExtension,
+                                             beside: docURL) {
+                    return rel
+                }
+                return self.fileToDataURI(url)
+            }
             guard !srcs.isEmpty,
                   let jsonData = try? JSONSerialization.data(withJSONObject: srcs),
                   let json = String(data: jsonData, encoding: .utf8) else { return false }
@@ -310,9 +570,14 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         webView.loadFileURL(indexURL, allowingReadAccessTo: URL(fileURLWithPath: "/"))
     }
 
-    /// Ask this window to open a file once its editor is ready.
+    /// Ask this window to open a file, now or once its editor is ready.
     func requestOpen(_ url: URL) {
         if webReady { openFile(url) } else { pendingURL = url }
+    }
+
+    /// Nothing is coming - show an empty document instead.
+    func openEmptyDocument() {
+        if webReady { sendToEditor(open: "") } else { wantsEmptyDocument = true }
     }
 
     // MARK: Find bar (floating overlay, like Safari/Chrome)
@@ -381,6 +646,18 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         webView.evaluateJavaScript("window.MW.setOutline(\(outlineVisible))", completionHandler: nil)
     }
 
+    // MARK: Source view
+
+    func toggleSourceView() {
+        sourceVisible.toggle()
+        webView.evaluateJavaScript("window.MW.setSource(\(sourceVisible))", completionHandler: nil)
+    }
+
+    /// Toggle an inline mark (superscript/subscript) over the selection.
+    func toggleMark(_ name: String) {
+        webView.evaluateJavaScript("window.MW.toggleMark(\(jsString(name)))", completionHandler: nil)
+    }
+
     func showSearch() {
         searchBar.isHidden = false
         window.makeFirstResponder(searchField)
@@ -432,12 +709,16 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         switch type {
         case "ready":
             webReady = true
+            applySpellCheckingPreference()
             if let url = pendingURL {
                 pendingURL = nil
                 openFile(url)
-            } else {
+            } else if wantsEmptyDocument {
+                wantsEmptyDocument = false
                 sendToEditor(open: "")
             }
+        case "opened":
+            refreshSpellCheckingMarks()
         case "dirty":
             setDirty(true)
         case "clean":
@@ -446,9 +727,44 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             if let href = body["href"] as? String { openExternal(href) }
         case "editImage":
             editImageSource(current: body["src"] as? String ?? "")
+        case "saveImage":
+            saveImageBeside(id: body["id"] as? Int ?? 0,
+                            dataURL: body["data"] as? String,
+                            remote: body["url"] as? String,
+                            suggestedName: body["name"] as? String)
         default:
             break
         }
+    }
+
+    /// Turn continuous spell checking on to match the stored preference.
+    ///
+    /// WebKit writes `WebContinuousSpellCheckingEnabled` when the Edit ▸ Spelling
+    /// item is toggled, but it doesn't *start* from that key - a fresh web view
+    /// comes up with checking off regardless. So ask the web view what state it
+    /// is in and send it the same action the menu would if it disagrees. The
+    /// state is process-wide, so whichever window loads first settles it.
+    static let spellCheckKey = "WebContinuousSpellCheckingEnabled"
+
+    func applySpellCheckingPreference() {
+        guard UserDefaults.standard.bool(forKey: DocumentWindow.spellCheckKey) else { return }
+        let toggle = Selector(("toggleContinuousSpellChecking:"))
+        let probe = NSMenuItem(title: "", action: toggle, keyEquivalent: "")
+        if let validator = webView as? NSUserInterfaceValidations,
+           validator.validateUserInterfaceItem(probe), probe.state == .off {
+            NSApp.sendAction(toggle, to: webView, from: nil)
+        }
+    }
+
+    /// Get the whole document marked for misspellings, not just the paragraph
+    /// the caret happens to be in.
+    ///
+    /// WebKit checks a block when the caret enters it and offers no way to check
+    /// a document outright (toggling continuous checking doesn't rescan loaded
+    /// text). The editor walks the caret across every block to provoke it.
+    func refreshSpellCheckingMarks() {
+        guard UserDefaults.standard.bool(forKey: DocumentWindow.spellCheckKey) else { return }
+        webView.evaluateJavaScript("window.MW.primeSpellCheck()", completionHandler: nil)
     }
 
     /// Open an http(s)/mailto link in the user's default browser/handler.
@@ -456,6 +772,123 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         guard let url = URL(string: href), let scheme = url.scheme?.lowercased(),
               ["http", "https", "mailto"].contains(scheme) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    // MARK: Saving images beside the document
+
+    /// Folder that images pasted or dropped into this document are written to.
+    static let imageFolderName = "images"
+
+    /// Write an image next to the document and answer with a path relative to
+    /// it, so the markdown stays portable (`images/foo.png`) instead of carrying
+    /// a base64 blob or depending on a remote server.
+    ///
+    /// Answers `null` when there's nowhere to put the file - an unsaved document
+    /// has no folder of its own - and the editor then keeps whatever it had.
+    func saveImageBeside(id: Int, dataURL: String?, remote: String?, suggestedName: String?) {
+        guard let docURL = currentURL else { return replyToEditor(id: id, value: nil) }
+
+        if let dataURL, let (data, ext) = decodeDataURL(dataURL) {
+            let name = suggestedName ?? "image.\(ext)"
+            replyToEditor(id: id, value: writeImage(data, preferredName: name, fallbackExt: ext, beside: docURL))
+            return
+        }
+
+        guard let remote, let url = URL(string: remote),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https"
+        else { return replyToEditor(id: id, value: nil) }
+
+        // Pasting an image copied from a web page is the one thing that reaches
+        // the network, and only because the user asked for that image.
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            guard let self else { return }
+            let mime = (response as? HTTPURLResponse)?.mimeType ?? response?.mimeType ?? ""
+            // Cap it so a mis-click can't drop a huge file into the user's folder.
+            guard let data, !data.isEmpty, data.count <= 40 * 1024 * 1024, mime.hasPrefix("image/") else {
+                DispatchQueue.main.async { self.replyToEditor(id: id, value: nil) }
+                return
+            }
+            let ext = Self.extensionFor(mime: mime) ?? (url.pathExtension.isEmpty ? "png" : url.pathExtension)
+            let name = url.lastPathComponent.isEmpty ? "image.\(ext)" : url.lastPathComponent
+            DispatchQueue.main.async {
+                let path = self.writeImage(data, preferredName: name, fallbackExt: ext, beside: docURL)
+                self.replyToEditor(id: id, value: path)
+            }
+        }.resume()
+    }
+
+    /// Write `data` into the document's images folder under a safe, unique name.
+    /// Returns the path relative to the document, or nil if it couldn't be written.
+    func writeImage(_ data: Data, preferredName: String, fallbackExt: String, beside docURL: URL) -> String? {
+        let folder = docURL.deletingLastPathComponent().appendingPathComponent(Self.imageFolderName, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+
+        var ext = (preferredName as NSString).pathExtension.lowercased()
+        if ext.isEmpty { ext = fallbackExt }
+        var stem = Self.sanitize((preferredName as NSString).deletingPathExtension)
+        if stem.isEmpty { stem = Self.sanitize(docURL.deletingPathExtension().lastPathComponent) + "-image" }
+
+        // Never overwrite an existing file; walk a suffix until the name is free.
+        var candidate = "\(stem).\(ext)"
+        var n = 1
+        while FileManager.default.fileExists(atPath: folder.appendingPathComponent(candidate).path) {
+            candidate = "\(stem)-\(n).\(ext)"
+            n += 1
+        }
+
+        do {
+            try data.write(to: folder.appendingPathComponent(candidate), options: .atomic)
+        } catch {
+            return nil
+        }
+        return "\(Self.imageFolderName)/\(candidate)"
+    }
+
+    /// Reduce a name to characters that need no escaping in a markdown path.
+    static func sanitize(_ raw: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        let mapped = raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+        // Collapse runs of "-" and trim them from the ends.
+        let collapsed = String(mapped).split(separator: "-", omittingEmptySubsequences: true).joined(separator: "-")
+        return String(collapsed.prefix(60))
+    }
+
+    static func extensionFor(mime: String) -> String? {
+        switch mime.lowercased() {
+        case "image/png": return "png"
+        case "image/jpeg", "image/jpg": return "jpg"
+        case "image/gif": return "gif"
+        case "image/webp": return "webp"
+        case "image/svg+xml": return "svg"
+        case "image/bmp": return "bmp"
+        case "image/tiff": return "tiff"
+        case "image/heic": return "heic"
+        default: return nil
+        }
+    }
+
+    /// Split a `data:image/png;base64,…` URL into its bytes and file extension.
+    func decodeDataURL(_ s: String) -> (Data, String)? {
+        guard s.hasPrefix("data:"), let comma = s.firstIndex(of: ",") else { return nil }
+        let header = String(s[s.index(s.startIndex, offsetBy: 5)..<comma])
+        guard header.contains("base64") else { return nil }
+        let mime = header.split(separator: ";").first.map(String.init) ?? ""
+        guard mime.hasPrefix("image/"),
+              let data = Data(base64Encoded: String(s[s.index(after: comma)...]))
+        else { return nil }
+        return (data, Self.extensionFor(mime: mime) ?? "png")
+    }
+
+    /// Answer a `requestNative` call in the editor.
+    func replyToEditor(id: Int, value: String?) {
+        let arg = value.map { jsString($0) } ?? "null"
+        webView.evaluateJavaScript("window.MW.nativeReply(\(id), \(arg))", completionHandler: nil)
     }
 
     // MARK: Image source editing (double-click an image)
@@ -487,7 +920,8 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.allowedFileTypes = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "tif", "heic"]
+        panel.allowedContentTypes = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "tif", "heic"]
+            .compactMap { UTType(filenameExtension: $0) }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let url = panel.url else { return }
             self.applyImageSource(url.absoluteString)
@@ -566,37 +1000,32 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         do {
             let text = try String(contentsOf: url, encoding: .utf8)
             currentURL = url
-            sendToEditor(open: text, relativeTo: url)
+            lastKnownModification = modificationDate(of: url)
+            lastSyncedText = text
+            sendToEditor(open: text)
             setDirty(false)
             updateTitle()
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
         } catch {
             presentError("Couldn’t open file", error.localizedDescription)
+            // The page skips building an empty editor when a document is on its
+            // way, so give it one now or the window stays blank.
+            sendToEditor(open: "")
         }
     }
 
-    func documentBaseURL(for documentURL: URL?) -> String? {
-        guard let documentURL else { return nil }
-        let directory = documentURL.deletingLastPathComponent()
-        return URL(fileURLWithPath: directory.path, isDirectory: true).absoluteString
+    /// JSON-encode a string for safe interpolation into a JS call.
+    func jsString(_ s: String) -> String {
+        let data = (try? JSONEncoder().encode(s)) ?? Data("\"\"".utf8)
+        return String(data: data, encoding: .utf8) ?? "\"\""
     }
 
-    func documentBaseJSON(for documentURL: URL?) -> String {
-        let baseURL = documentBaseURL(for: documentURL)
-        let data = (try? JSONEncoder().encode(baseURL)) ?? Data("null".utf8)
-        return String(data: data, encoding: .utf8) ?? "null"
-    }
-
-    func sendToEditor(open text: String, relativeTo documentURL: URL? = nil) {
-        let data = (try? JSONEncoder().encode(text)) ?? Data("\"\"".utf8)
-        let json = String(data: data, encoding: .utf8) ?? "\"\""
-        let baseJSON = documentBaseJSON(for: documentURL)
-        webView.evaluateJavaScript("window.MW.open(\(json), \(baseJSON));", completionHandler: nil)
-    }
-
-    func updateDocumentBase(for documentURL: URL?) {
-        let baseJSON = documentBaseJSON(for: documentURL)
-        webView.evaluateJavaScript("window.MW.setDocumentBase(\(baseJSON))", completionHandler: nil)
+    func sendToEditor(open text: String) {
+        // Hand over the file's own directory too, so images written as paths
+        // relative to the document resolve against it rather than against the
+        // app bundle's web/ folder.
+        let base = currentURL.map { jsString($0.deletingLastPathComponent().absoluteString) } ?? "null"
+        webView.evaluateJavaScript("window.MW.open(\(jsString(text)), \(base));", completionHandler: nil)
     }
 
     func fetchMarkdown(_ completion: @escaping (String) -> Void) {
@@ -605,33 +1034,247 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         }
     }
 
+    /// The file's current modification date, if it still exists.
+    func modificationDate(of url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
+    /// Whether the file changed on disk since we last read or wrote it.
+    var changedOnDisk: Bool {
+        guard let url = currentURL, let now = modificationDate(of: url) else { return false }
+        guard let known = lastKnownModification else { return false }
+        return now > known
+    }
+
+    /// Reveal the document in Finder.
+    func showInFinder() {
+        guard let url = currentURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Re-read the file, picking up edits made outside Markwise.
+    ///
+    /// Three cases, and they deserve different answers: nothing changed either
+    /// side (say so rather than silently doing nothing), the file moved on but
+    /// the editor is clean (just reload), or both changed - a real conflict,
+    /// where the only thing at stake is which version survives.
+    func reloadFromDisk() {
+        guard let url = currentURL else { return }
+        let external = changedOnDisk
+
+        if isDirty {
+            guard external else {
+                // Nothing has changed underneath us, so there's nothing to
+                // reload and no reason to throw the edits away: save them.
+                // Reload can always keep your work when keeping it is safe.
+                writeMarkdown(to: url)
+                return
+            }
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "“\(url.lastPathComponent)” was changed by another program."
+            alert.informativeText = "You have unsaved changes here too. Merging combines them into this one file, marking up only the places where the two versions changed the same lines."
+            alert.addButton(withTitle: "Merge Both")
+            alert.addButton(withTitle: "Reload from Disk")
+            alert.addButton(withTitle: "Keep My Version")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                mergeWithDiskVersion(url)
+                return
+            case .alertSecondButtonReturn:
+                break // fall through to reload
+            case .alertThirdButtonReturn:
+                writeMarkdown(to: url)
+                return
+            default:
+                return
+            }
+        } else if !external {
+            let alert = NSAlert()
+            alert.messageText = "“\(url.lastPathComponent)” is already up to date."
+            alert.informativeText = "The file hasn't changed on disk since you opened it."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
+        openFile(url)
+    }
+
+    // MARK: Merging both versions
+
+    // Conflict markers have to survive a round trip through a markdown editor,
+    // and git's don't: `=======` is a setext heading underline (it comes back
+    // escaped as `\=======`) and `>>>>>>>` is seven nested blockquotes. A line
+    // starting `<<<<<<<` is inert in commonmark, so all three markers use it.
+    static let conflictMine = "MARKWISE CONFLICT: YOUR VERSION (unsaved)"
+    static let conflictTheirs = "MARKWISE CONFLICT: ON DISK (changed by another program)"
+    static let conflictEnd = "MARKWISE CONFLICT: END OF CONFLICT"
+
+    /// Combine both versions into the one file.
+    ///
+    /// A three-way merge against the text as it was opened, so edits that don't
+    /// overlap simply come out combined and only genuinely competing lines are
+    /// marked up for the user to settle.
+    func mergeWithDiskVersion(_ url: URL) {
+        guard let diskText = try? String(contentsOf: url, encoding: .utf8) else {
+            presentError("Couldn’t merge", "The file could no longer be read.")
+            return
+        }
+        let base = lastSyncedText ?? ""
+        let js = "JSON.stringify(window.MW.mergeInputs(\(jsString(base)), \(jsString(diskText))))"
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self else { return }
+            guard let json = result as? String,
+                  let data = json.data(using: .utf8),
+                  let sides = (try? JSONSerialization.jsonObject(with: data)) as? [String: String],
+                  let mine = sides["mine"], let ancestor = sides["base"], let theirs = sides["theirs"]
+            else {
+                self.presentError("Couldn’t merge", "The editor didn’t return its version of the document.")
+                return
+            }
+            self.applyMerge(url: url, ancestor: ancestor, mine: mine, theirs: theirs)
+        }
+    }
+
+    private func applyMerge(url: URL, ancestor: String, mine: String, theirs: String) {
+        guard let merged = Self.diff3Merge(mine: mine, ancestor: ancestor, theirs: theirs) else {
+            presentError("Couldn’t merge", "The merge tool failed, so nothing was changed. Use Keep My Version or Reload from Disk instead.")
+            return
+        }
+
+        do {
+            try merged.text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            presentError("Couldn’t save the merged file", error.localizedDescription)
+            return
+        }
+        openFile(url)
+
+        if merged.hadConflicts {
+            let alert = NSAlert()
+            alert.messageText = "Merged, with conflicts to settle."
+            alert.informativeText = "Both versions were kept. Where the two edited the same lines, you'll find them marked with “\(Self.conflictMine)” - delete the version you don't want, and the marker lines with it."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+    }
+
+    /// Run the system's `diff3` and translate its markers into markdown-safe
+    /// ones. Returns nil if the merge tool itself failed.
+    static func diff3Merge(mine: String, ancestor: String, theirs: String) -> (text: String, hadConflicts: Bool)? {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("markwise-merge-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        guard (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)) != nil
+        else { return nil }
+
+        // diff3 is line-based, so every side needs a trailing newline or the
+        // last line of each gets treated as different from the others.
+        func write(_ text: String, _ name: String) -> URL? {
+            let url = dir.appendingPathComponent(name)
+            let padded = text.hasSuffix("\n") ? text : text + "\n"
+            return (try? padded.write(to: url, atomically: true, encoding: .utf8)) == nil ? nil : url
+        }
+        guard let mineURL = write(mine, "mine"),
+              let baseURL = write(ancestor, "base"),
+              let theirsURL = write(theirs, "theirs")
+        else { return nil }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/diff3")
+        process.arguments = ["-m", mineURL.path, baseURL.path, theirsURL.path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        // 0 = merged cleanly, 1 = merged with conflicts, anything else = failure.
+        guard process.terminationStatus <= 1, let output = String(data: data, encoding: .utf8) else { return nil }
+
+        return (rewriteConflictMarkers(output), process.terminationStatus == 1)
+    }
+
+    /// Swap diff3's markers for markdown-safe ones, drop the common-ancestor
+    /// section (a third copy of the text is noise when settling prose), and
+    /// leave blank lines around each marker so it stays its own paragraph
+    /// instead of being absorbed into the text above it.
+    static func rewriteConflictMarkers(_ merged: String) -> String {
+        var out: [String] = []
+        var inAncestorSection = false
+
+        for line in merged.components(separatedBy: "\n") {
+            if line.hasPrefix("<<<<<<<") {
+                out.append(contentsOf: ["", conflictMine, ""])
+                inAncestorSection = false
+            } else if line.hasPrefix("|||||||") {
+                inAncestorSection = true // skip diff3's copy of the original
+            } else if line == "=======" {
+                out.append(contentsOf: ["", conflictTheirs, ""])
+                inAncestorSection = false
+            } else if line.hasPrefix(">>>>>>>") {
+                out.append(contentsOf: ["", conflictEnd, ""])
+                inAncestorSection = false
+            } else if !inAncestorSection {
+                out.append(line)
+            }
+        }
+
+        // Collapse the runs of blank lines the markers introduce.
+        var tidied: [String] = []
+        for line in out {
+            if line.isEmpty, tidied.last?.isEmpty == true { continue }
+            tidied.append(line)
+        }
+        return tidied.joined(separator: "\n")
+    }
+
     func save() {
         if let url = currentURL { writeMarkdown(to: url) } else { saveAs() }
     }
 
-    func saveAs() {
+    /// `completion` reports whether the document ended up on disk - the caller
+    /// needs that when a save stands between the user and closing or quitting.
+    func saveAs(_ completion: ((Bool) -> Void)? = nil) {
         let panel = NSSavePanel()
-        panel.allowedFileTypes = ["md", "markdown"]
+        panel.allowedContentTypes = ["md", "markdown"]
+            .compactMap { UTType(filenameExtension: $0) }
         panel.nameFieldStringValue = currentURL?.lastPathComponent ?? "Untitled.md"
         panel.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response == .OK, let url = panel.url else { return }
+            guard let self, response == .OK, let url = panel.url else {
+                completion?(false) // backed out of the panel
+                return
+            }
             self.currentURL = url
-            self.writeMarkdown(to: url)
+            // The document may have moved directories, so relative image paths
+            // now resolve somewhere else.
+            let base = self.jsString(url.deletingLastPathComponent().absoluteString)
+            self.webView.evaluateJavaScript("window.MW.setBaseURL(\(base))", completionHandler: nil)
+            self.writeMarkdown(to: url, completion: completion)
         }
     }
 
-    func writeMarkdown(to url: URL) {
+    func writeMarkdown(to url: URL, completion: ((Bool) -> Void)? = nil) {
         fetchMarkdown { [weak self] md in
-            guard let self else { return }
+            guard let self else { completion?(false); return }
             do {
                 try md.write(to: url, atomically: true, encoding: .utf8)
+                self.lastKnownModification = self.modificationDate(of: url)
+                self.lastSyncedText = md
                 self.setDirty(false)
                 self.webView.evaluateJavaScript("window.MW.markSaved()", completionHandler: nil)
                 self.updateDocumentBase(for: url)
                 self.updateTitle()
                 NSDocumentController.shared.noteNewRecentDocumentURL(url)
+                completion?(true)
             } catch {
                 self.presentError("Couldn’t save file", error.localizedDescription)
+                completion?(false)
             }
         }
     }
@@ -670,25 +1313,28 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         app?.documentDidClose(self)
     }
 
+    /// Ask about unsaved changes before closing or quitting. `completion` is
+    /// true when it's safe to proceed - the document was saved, or the user
+    /// chose to throw the changes away.
     func confirmDiscardIfNeeded(_ completion: @escaping (Bool) -> Void) {
         guard isDirty else { completion(true); return }
+        window.makeKeyAndOrderFront(nil) // make it obvious which document this is
+
         let alert = NSAlert()
-        alert.messageText = "Do you want to save the changes?"
+        alert.messageText = "Do you want to save the changes you made to “\(currentURL?.lastPathComponent ?? "Untitled")”?"
         alert.informativeText = "Your changes will be lost if you don’t save them."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Don’t Save")
         alert.addButton(withTitle: "Cancel")
-        let response = alert.runModal()
-        switch response {
+        switch alert.runModal() {
         case .alertFirstButtonReturn:
+            // An untitled document has nowhere to go yet, so ask where. If the
+            // save doesn't happen - no destination chosen, or the write failed -
+            // don't proceed, or "Save" would quietly discard the work instead.
             if let url = currentURL {
-                fetchMarkdown { [weak self] md in
-                    try? md.write(to: url, atomically: true, encoding: .utf8)
-                    self?.setDirty(false)
-                    completion(true)
-                }
+                writeMarkdown(to: url) { completion($0) }
             } else {
-                completion(true)
+                saveAs { completion($0) }
             }
         case .alertSecondButtonReturn:
             completion(true)

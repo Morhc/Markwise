@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Build and install Markwise for the current host platform.
+# On macOS, only the installed /Applications bundle is registered with Launch
+# Services. Registering the development bundle as well creates two applications
+# with the same bundle identifier and can break Finder's Recents and Open With.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -33,6 +36,7 @@ install_macos() {
     local bundle_id="com.josh.markwise"
     local uti="net.daringfireball.markdown"
     local lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+    local dev_app="$ROOT/Markwise.app"
 
     echo "==> Building"
     ./build.sh
@@ -41,10 +45,13 @@ install_macos() {
     pkill -f "Markwise.app/Contents/MacOS/Markwise" 2>/dev/null || true
     sleep 1
     rm -rf "$app"
-    cp -R Markwise.app /Applications/
+    cp -R "$dev_app" /Applications/
 
-    echo "==> Registering with Launch Services"
-    "$lsregister" -u "$ROOT/Markwise.app" 2>/dev/null || true
+    echo "==> Removing the development bundle from Launch Services"
+    "$lsregister" -u "$dev_app" 2>/dev/null || true
+    rm -rf "$dev_app"
+
+    echo "==> Registering the installed copy with Launch Services"
     "$lsregister" -f "$app"
 
     echo "==> Setting Markwise as the default app for Markdown (.md)"
@@ -55,6 +62,24 @@ if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "$bundle
     print("    default .md handler -> \\(url.path)")
 }
 SWIFT
+
+    echo "==> Verifying the installed bundle registration"
+    local count
+    count=$(swift - <<SWIFT
+import Foundation
+let urls = LSCopyApplicationURLsForBundleIdentifier("$bundle_id" as CFString, nil)?.takeRetainedValue() as? [URL] ?? []
+for url in urls {
+    FileHandle.standardError.write("    registered: \(url.path)\n".data(using: .utf8)!)
+}
+print(urls.count)
+SWIFT
+)
+    if [ "$count" != "1" ]; then
+        echo "error: $count copies of $bundle_id are registered; expected 1" >&2
+        echo "rebuild the Launch Services database and rerun this installer:" >&2
+        echo "  \"$lsregister\" -r -domain local -domain system -domain user" >&2
+        exit 1
+    fi
 
     echo "==> Done. Installed and set as the default .md app: $app"
 }

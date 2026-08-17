@@ -8,24 +8,133 @@
   <title>Markwise</title>
   <link rel="stylesheet" href="./bundle.css">
   <style>
-    html, body { margin: 0; padding: 0; height: 100%; background: #fff; }
+    /* --- Colour tokens ------------------------------------------------------
+       Light values here, dark values in the prefers-color-scheme block below.
+       The app never sets a theme class: the native side switches the window's
+       appearance (View ▸ Appearance), and WebKit reports that through
+       prefers-color-scheme, so "System" needs no special case. */
+    :root {
+      --mw-bg: #ffffff;
+      --mw-text: #24292e;
+      --mw-link: #0b66c3;
+      --mw-panel: #f7f7f8;
+      --mw-panel-border: #e4e4e7;
+      --mw-panel-hover: #e9e9ec;
+      --mw-heading: #3f3f46;
+      --mw-muted: #52525b;
+      --mw-faint: #8a8a8e;
+      --mw-popup: #ffffff;
+      --mw-popup-border: #d9d9de;
+      --mw-field: #fbfbfc;
+      --mw-success: #1a7f37;
+      --mw-shadow: rgba(0, 0, 0, .14);
+
+      --mw-code-text: #24292e;
+      --mw-code-comment: #6a737d;
+      --mw-code-keyword: #d73a49;
+      --mw-code-string: #032f62;
+      --mw-code-number: #005cc5;
+      --mw-code-function: #6f42c1;
+      --mw-code-type: #22863a;
+      --mw-code-invalid: #b31d28;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --mw-bg: #1a1a1a;
+        --mw-text: #e2e2e2;
+        --mw-link: #6fb3ff;
+        --mw-panel: #202020;
+        --mw-panel-border: #303030;
+        --mw-panel-hover: #2b2b2b;
+        --mw-heading: #d4d4d4;
+        --mw-muted: #b0b0b0;
+        --mw-faint: #8b8b8b;
+        --mw-popup: #262626;
+        --mw-popup-border: #3a3a3a;
+        --mw-field: #1c1c1c;
+        --mw-success: #3fb950;
+        --mw-shadow: rgba(0, 0, 0, .5);
+
+        --mw-code-text: #e6edf3;
+        --mw-code-comment: #8b949e;
+        --mw-code-keyword: #ff7b72;
+        --mw-code-string: #a5d6ff;
+        --mw-code-number: #79c0ff;
+        --mw-code-function: #d2a8ff;
+        --mw-code-type: #7ee787;
+        --mw-code-invalid: #ffa198;
+      }
+
+      /* Crepe's own palette (its dark theme is just this set of variables). */
+      .milkdown {
+        --crepe-color-background: #1a1a1a;
+        --crepe-color-on-background: #e6e6e6;
+        --crepe-color-surface: #121212;
+        --crepe-color-surface-low: #1c1c1c;
+        --crepe-color-on-surface: #d1d1d1;
+        --crepe-color-on-surface-variant: #a9a9a9;
+        --crepe-color-outline: #757575;
+        --crepe-color-primary: #b5b5b5;
+        --crepe-color-secondary: #4d4d4d;
+        --crepe-color-on-secondary: #d6d6d6;
+        --crepe-color-inverse: #e5e5e5;
+        --crepe-color-on-inverse: #2a2a2a;
+        --crepe-color-inline-code: #ff6666;
+        --crepe-color-error: #ff6666;
+        --crepe-color-hover: #232323;
+        --crepe-color-selected: #2f2f2f;
+        --crepe-color-inline-area: #2b2b2b;
+        --crepe-shadow-1:
+          0px 1px 2px 0px rgba(255, 255, 255, .3),
+          0px 1px 3px 1px rgba(255, 255, 255, .15);
+        --crepe-shadow-2:
+          0px 1px 2px 0px rgba(255, 255, 255, .3),
+          0px 2px 6px 2px rgba(255, 255, 255, .15);
+      }
+    }
+
+    html, body { margin: 0; padding: 0; height: 100%; background: var(--mw-bg); }
+
+    /* Text selection. Overrides Crepe's `*::selection` (same specificity, later
+       in the cascade). Code blocks draw their own selection layer and are left
+       alone.
+
+       These are literal colours, not tokens: WebKit doesn't resolve custom
+       properties inside `::selection`, and paints the selection black when it
+       can't. For the same reason the dark rule has to sit *after* the light one
+       - a media query adds no specificity, so source order decides. */
+    .milkdown .ProseMirror *::selection,
+    .milkdown .ProseMirror::selection,
+    #source::selection { background: #d5d5d5; }
+
+    @media (prefers-color-scheme: dark) {
+      /* Crepe nominally selects with #2f2f2f here, but the selection actually
+         paints near-black (#040404) because the custom property never resolves
+         - so selecting text was all but invisible. This is ~2.9:1 against the
+         #1a1a1a page (the 3:1 mark for non-text UI) and leaves the selected
+         text itself at 4.8:1. */
+      .milkdown .ProseMirror *::selection,
+      .milkdown .ProseMirror::selection,
+      #source::selection { background: #35659f; }
+    }
     #app { height: 100vh; overflow: auto; }
     .milkdown { height: 100%; }
     /* Give the text a comfortable centered column like Typora. The generous
        side padding also leaves room for the floating block (+/drag) handle,
-       which is 66px wide and sits 16px to the left of the text — it needs
+       which is 66px wide and sits 16px to the left of the text - it needs
        ~82px of clearance or it clips at the window edge. This padding is
        measured from the text column, so the handle stays visible at ANY
        window width. */
     .milkdown .editor { max-width: 860px; margin: 0 auto; padding: 32px 88px 64px; }
     /* Links: classic blue, underlined, pointer cursor. */
     .milkdown .editor a,
-    .milkdown .editor a * { color: #0b66c3 !important; text-decoration: underline; cursor: pointer; }
+    .milkdown .editor a * { color: var(--mw-link) !important; text-decoration: underline; cursor: pointer; }
 
     /* Inline code is styled `display: inline-block`, so a long unbroken token
        (e.g. `exp_fu_overrides`) never wraps and spills into the next table
-       column. Inside table cells, let cell content — and inline code in
-       particular — break so it stays within its column. */
+       column. Inside table cells, let cell content - and inline code in
+       particular - break so it stays within its column. */
     .milkdown .editor :is(td, th) { overflow-wrap: anywhere; }
     .milkdown .editor :is(td, th) code {
       white-space: normal;
@@ -33,15 +142,84 @@
       word-break: break-word;
     }
 
+    /* --- Markdown source view (⌘/) ----------------------------------------- */
+    #source {
+      display: none;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      box-sizing: border-box;
+      padding: 32px calc(50% - 430px + 88px) 64px;
+      border: 0;
+      outline: none;
+      resize: none;
+      background: var(--mw-bg);
+      color: var(--mw-text);
+      font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+      tab-size: 2;
+    }
+    /* Below the comfortable column width, fall back to plain side padding. */
+    @media (max-width: 1036px) { #source { padding-left: 88px; padding-right: 88px; } }
+    body.source-open #source { display: block; }
+    body.source-open #app { display: none; }
+
+    /* --- Inline LaTeX ------------------------------------------------------ */
+    /* Crepe pads equations by 4px a side, which shows up as a gap that isn't in
+       the markdown (and doubles the gap where a real space *is*). Sit flush and
+       on the text baseline instead. `-webkit-user-drag` is what actually lets a
+       drag-selection start on top of an equation. */
+    .milkdown .editor span[data-type='math_inline'] {
+      padding: 0;
+      vertical-align: baseline;
+      -webkit-user-drag: none;
+    }
+    /* Crepe's own equation tooltip is broken upstream (it renders a confirm
+       button next to an empty box); src/latex.js supplies a working one. */
+    .milkdown-latex-inline-edit { display: none !important; }
+
+    .mw-math-edit {
+      position: fixed;
+      z-index: 60;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 220px;
+      max-width: min(460px, 90vw);
+      padding: 8px;
+      background: var(--mw-popup);
+      border: 1px solid var(--mw-popup-border);
+      border-radius: 8px;
+      box-shadow: 0 6px 20px var(--mw-shadow);
+    }
+    .mw-math-edit[data-show='false'] { display: none; }
+    .mw-math-input {
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--mw-text);
+      padding: 5px 7px;
+      border: 1px solid var(--mw-popup-border);
+      border-radius: 5px;
+      outline: none;
+      background: var(--mw-field);
+    }
+    .mw-math-input:focus { border-color: var(--mw-link); background: var(--mw-popup); }
+    .mw-math-preview {
+      min-height: 20px;
+      padding: 2px 7px 4px;
+      text-align: center;
+      overflow-x: auto;
+      color: var(--mw-text);
+    }
+
     /* --- Link tooltip: "Copied!" confirmation on the copy button ----------- */
-    .link-preview .link-icon.mw-copied { position: relative; color: #1a7f37; transform: scale(1.12); transition: transform .12s ease; }
+    .link-preview .link-icon.mw-copied { position: relative; color: var(--mw-success); transform: scale(1.12); transition: transform .12s ease; }
     .link-preview .link-icon.mw-copied::after {
       content: 'Copied!';
       position: absolute;
       bottom: calc(100% + 6px);
       left: 50%;
       transform: translateX(-50%);
-      background: #1a7f37;
+      background: var(--mw-success);
       color: #fff;
       font-size: 11px;
       line-height: 1;
@@ -66,8 +244,8 @@
       box-sizing: border-box;
       padding: 20px 8px 24px 16px;
       overflow-y: auto;
-      background: #f7f7f8;
-      border-right: 1px solid #e4e4e7;
+      background: var(--mw-panel);
+      border-right: 1px solid var(--mw-panel-border);
       -webkit-user-select: none;
       user-select: none;
       display: none;
@@ -80,19 +258,19 @@
       font: 600 11px/1 -apple-system, system-ui, sans-serif;
       letter-spacing: .06em;
       text-transform: uppercase;
-      color: #8a8a8e;
+      color: var(--mw-faint);
       padding: 0 8px 10px;
     }
     .outline-empty {
       font: 13px -apple-system, system-ui, sans-serif;
-      color: #a1a1aa;
+      color: var(--mw-faint);
       padding: 4px 8px;
     }
     .outline-list { display: flex; flex-direction: column; }
     .outline-item {
       display: block;
       font: 13px/1.35 -apple-system, system-ui, sans-serif;
-      color: #3f3f46 !important;
+      color: var(--mw-heading) !important;
       text-decoration: none !important;
       padding: 5px 8px;
       border-radius: 6px;
@@ -101,13 +279,13 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .outline-item:hover { background: #e9e9ec; }
+    .outline-item:hover { background: var(--mw-panel-hover); }
     .outline-item.h1 { font-weight: 600; }
     .outline-item.h2 { padding-left: 20px; }
-    .outline-item.h3 { padding-left: 32px; color: #52525b !important; }
-    .outline-item.h4 { padding-left: 44px; color: #71717a !important; }
-    .outline-item.h5 { padding-left: 56px; color: #71717a !important; }
-    .outline-item.h6 { padding-left: 68px; color: #71717a !important; }
+    .outline-item.h3 { padding-left: 32px; color: var(--mw-muted) !important; }
+    .outline-item.h4 { padding-left: 44px; color: var(--mw-faint) !important; }
+    .outline-item.h5 { padding-left: 56px; color: var(--mw-faint) !important; }
+    .outline-item.h6 { padding-left: 68px; color: var(--mw-faint) !important; }
 
     /* Find bar used by the Linux host. The macOS host keeps its native bar. */
     #find-bar {
@@ -119,10 +297,10 @@
       align-items: center;
       gap: 4px;
       padding: 7px;
-      border: 1px solid #d4d4d8;
+      border: 1px solid var(--mw-popup-border);
       border-radius: 8px;
-      background: #fafafa;
-      box-shadow: 0 3px 14px rgb(0 0 0 / 18%);
+      background: var(--mw-popup);
+      box-shadow: 0 3px 14px var(--mw-shadow);
       font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     #find-bar.visible { display: flex; }
@@ -130,13 +308,13 @@
       width: 220px;
       box-sizing: border-box;
       padding: 5px 7px;
-      border: 1px solid #a1a1aa;
+      border: 1px solid var(--mw-popup-border);
       border-radius: 5px;
       outline: none;
       font: inherit;
     }
-    #find-input:focus { border-color: #0b66c3; box-shadow: 0 0 0 2px rgb(11 102 195 / 18%); }
-    #find-result { min-width: 58px; color: #52525b; text-align: center; }
+    #find-input:focus { border-color: var(--mw-link); box-shadow: 0 0 0 2px rgb(11 102 195 / 18%); }
+    #find-result { min-width: 58px; color: var(--mw-muted); text-align: center; }
     #find-bar button {
       min-width: 28px;
       height: 28px;
@@ -144,11 +322,11 @@
       border: 0;
       border-radius: 5px;
       background: transparent;
-      color: #3f3f46;
+      color: var(--mw-heading);
       cursor: pointer;
       font: 16px/1 inherit;
     }
-    #find-bar button:hover { background: #e4e4e7; }
+    #find-bar button:hover { background: var(--mw-panel-hover); }
   </style>
 </head>
 <body>
@@ -161,6 +339,7 @@
   </div>
   <div id="outline"></div>
   <div id="app"></div>
+  <textarea id="source" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
   <script src="./bundle.js"></script>
 </body>
 </html>
