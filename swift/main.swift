@@ -178,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Document-specific actions forward to the active window.
     @objc func saveDocument(_ sender: Any?) { activeDocument?.save() }
     @objc func saveDocumentAs(_ sender: Any?) { activeDocument?.saveAs() }
+    @objc func exportPDF(_ sender: Any?) { activeDocument?.exportPDF() }
     @objc func toggleOutline(_ sender: Any?) { activeDocument?.toggleOutline() }
     @objc func toggleSourceView(_ sender: Any?) { activeDocument?.toggleSourceView() }
     @objc func reloadFromDisk(_ sender: Any?) { activeDocument?.reloadFromDisk() }
@@ -191,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Disable document actions when there's no open window.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
-        case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)),
+        case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)), #selector(exportPDF(_:)),
              #selector(performFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)):
             return activeDocument != nil
         case #selector(toggleSuperscript(_:)), #selector(toggleSubscript(_:)):
@@ -304,6 +305,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let saveAs = NSMenuItem(title: "Save As…", action: #selector(saveDocumentAs(_:)), keyEquivalent: "s")
         saveAs.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(saveAs)
+        let exportPDFItem = NSMenuItem(title: "Export as PDF…", action: #selector(exportPDF(_:)), keyEquivalent: "e")
+        exportPDFItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(exportPDFItem)
         fileMenu.addItem(NSMenuItem.separator())
         // Pick up edits made to the file by another program.
         fileMenu.addItem(withTitle: "Reload from Disk", action: #selector(reloadFromDisk(_:)), keyEquivalent: "r")
@@ -464,6 +468,7 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     var currentURL: URL?
     var isDirty = false
     var webReady = false
+    var isExportingPDF = false
     /// Whether the document outline sidebar is showing (off by default).
     var outlineVisible = false
     /// Whether the raw-markdown source view is showing (off by default).
@@ -1028,6 +1033,11 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         webView.evaluateJavaScript("window.MW.open(\(jsString(text)), \(base));", completionHandler: nil)
     }
 
+    func updateDocumentBase(for documentURL: URL?) {
+        let base = documentURL.map { jsString($0.deletingLastPathComponent().absoluteString) } ?? "null"
+        webView.evaluateJavaScript("window.MW.setBaseURL(\(base))", completionHandler: nil)
+    }
+
     func fetchMarkdown(_ completion: @escaping (String) -> Void) {
         webView.evaluateJavaScript("window.MW.getMarkdown()") { result, _ in
             completion((result as? String) ?? "")
@@ -1236,6 +1246,92 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
     func save() {
         if let url = currentURL { writeMarkdown(to: url) } else { saveAs() }
+    }
+
+    func exportPDF() {
+        guard webReady, !isExportingPDF else { return }
+        isExportingPDF = true
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        let basename = currentURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
+        panel.nameFieldStringValue = "\(basename).pdf"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            guard response == .OK, let destination = panel.url else {
+                self.isExportingPDF = false
+                return
+            }
+            self.preparePDFExport(to: destination)
+        }
+    }
+
+    /// Both `preparePdfExport` and `finishPdfExport` are async in the editor, so
+    /// they hand back promises. `evaluateJavaScript` doesn't await one — it would
+    /// report an unsupported result type and the export would always look like it
+    /// had failed to prepare. `callAsyncJavaScript` is the one that waits.
+    private func preparePDFExport(to destination: URL) {
+        webView.callAsyncJavaScript("return await window.MW.preparePdfExport()",
+                                    arguments: [:], in: nil, in: .page) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let value):
+                let readiness = value as? [String: Any]
+                if readiness?["ok"] as? Bool == true {
+                    self.writePDF(to: destination)
+                    return
+                }
+                let missing = readiness?["missingImages"] as? [String] ?? []
+                let detail = missing.isEmpty
+                    ? "The document could not be prepared for export."
+                    : "The following images could not be loaded:\n\n\(missing.prefix(20).joined(separator: "\n"))"
+                self.finishPDFExport(error: detail)
+            case .failure(let error):
+                self.finishPDFExport(error: error.localizedDescription)
+            }
+        }
+    }
+
+    private func writePDF(to destination: URL) {
+        let printInfo = NSPrintInfo.shared.copy() as! NSPrintInfo
+        printInfo.topMargin = 36
+        printInfo.bottomMargin = 36
+        printInfo.leftMargin = 36
+        printInfo.rightMargin = 36
+        printInfo.horizontalPagination = .fit
+        printInfo.verticalPagination = .automatic
+        printInfo.jobDisposition = .save
+        // `dictionary()` is untyped, so the key can't be written in shorthand.
+        printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = destination as NSURL
+
+        let operation = webView.printOperation(with: printInfo)
+        operation.jobTitle = currentURL?.lastPathComponent ?? "Untitled"
+        operation.showsPrintPanel = false
+        operation.showsProgressPanel = true
+        // `run()` is the obvious call and it does not work with a WKWebView: the
+        // operation never paginates and streams blank pages until it fills the
+        // disk (a gigabyte in under two minutes here). `runModal` drives the same
+        // operation asynchronously, which is what WebKit expects — no sheet is
+        // shown, since the print panel is switched off.
+        operation.runModal(for: window,
+                           delegate: self,
+                           didRun: #selector(printOperationDidRun(_:success:contextInfo:)),
+                           contextInfo: nil)
+    }
+
+    @objc private func printOperationDidRun(_ operation: NSPrintOperation,
+                                            success: Bool,
+                                            contextInfo: UnsafeMutableRawPointer?) {
+        finishPDFExport(error: success ? nil : "The print engine could not create the PDF document.")
+    }
+
+    private func finishPDFExport(error: String?) {
+        webView.callAsyncJavaScript("return await window.MW.finishPdfExport()",
+                                    arguments: [:], in: nil, in: .page) { [weak self] _ in
+            guard let self else { return }
+            self.isExportingPDF = false
+            if let error { self.presentError("Couldn’t export PDF", error) }
+        }
     }
 
     /// `completion` reports whether the document ended up on disk — the caller

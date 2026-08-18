@@ -140,7 +140,7 @@ Icon caches are sticky. To force a refresh: `touch Markwise.app`, and if needed
 | Superscript/subscript | `src/supsub.js` | `sup`/`sub` marks + remark parse/stringify so they round-trip as `<sup>`/`<sub>`. |
 | Image alt text | `src/imageblock.js` | Patches Milkdown's `image-block` schema, which otherwise stores the aspect ratio in the markdown `alt` field and destroys the description on save. |
 | Code-block theme, language list | `src/codeblock.js` | CodeMirror highlight style; explicit `bash` entry. |
-| Native window, menus, open/save, dirty state | `swift/main.swift` | `AppDelegate` + `DocumentWindow`. File open via `application(_:open:)`; save via `evaluateJavaScript("window.MW.getMarkdown()")`. |
+| Native window, menus, open/save/export, dirty state | `swift/main.swift` | `AppDelegate` + `DocumentWindow`. File open via `application(_:open:)`; save and PDF export use the `window.MW` bridge. |
 | HTML shell + custom CSS (link color, layout, source view, equation popup) | `app/web/index.html` | Loads `bundle.js` / `bundle.css`. |
 | Bundler config / asset inlining | `build.mjs` | esbuild; non-CSS assets use `dataurl` loader. |
 | File-type associations, bundle id, version | `Info.plist` | `CFBundleDocumentTypes` + `UTImportedTypeDeclarations` for markdown. Bundle id: `com.josh.markwise`. |
@@ -158,6 +158,7 @@ Swift → JS, all via `evaluateJavaScript`:
 | `window.MW.setOutline(bool)` / `setSource(bool)` | Show/hide the outline sidebar and the raw-source view. Swift owns the state so menu checkmarks stay in sync. |
 | `window.MW.toggleMark(name)` | Toggle an inline mark (`"sup"` / `"sub"`) over the selection. |
 | `window.MW.setBaseURL(href)` | Re-point relative paths (used after Save As). |
+| `window.MW.preparePdfExport()` / `finishPdfExport()` | Enter and leave the shared print state. Preparation renders source-view edits, waits for fonts and images, and reports missing images before the native host creates a PDF. |
 | `window.MW.setImageSrc(src)` / `insertImages(srcs, x, y)` | Replies to an `editImage` prompt; insert dropped/pasted images. |
 | `window.MW.primeSpellCheck()` | Walk the caret over every block so WebKit marks the whole document, not just the block the caret is in. |
 | `window.MW.nativeReply(id, value)` | Answers a request the editor made with an `id` (see `saveImage`). |

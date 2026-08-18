@@ -284,6 +284,134 @@
     .outline-item.h4 { padding-left: 44px; color: var(--mw-faint) !important; }
     .outline-item.h5 { padding-left: 56px; color: var(--mw-faint) !important; }
     .outline-item.h6 { padding-left: 68px; color: var(--mw-faint) !important; }
+
+    /* PDF export is deliberately print-friendly even when the editor is dark. */
+    html.mw-pdf-export {
+      color-scheme: light;
+      --mw-bg: #ffffff;
+      --mw-text: #24292e;
+      --mw-link: #0b66c3;
+      --mw-panel: #f7f7f8;
+      --mw-panel-border: #e4e4e7;
+      --mw-panel-hover: #e9e9ec;
+      --mw-heading: #3f3f46;
+      --mw-muted: #52525b;
+      --mw-faint: #8a8a8e;
+      --mw-popup: #ffffff;
+      --mw-popup-border: #d9d9de;
+      --mw-field: #fbfbfc;
+      --mw-success: #1a7f37;
+      --mw-shadow: rgba(0, 0, 0, .14);
+      --mw-code-text: #24292e;
+      --mw-code-comment: #6a737d;
+      --mw-code-keyword: #d73a49;
+      --mw-code-string: #032f62;
+      --mw-code-number: #005cc5;
+      --mw-code-function: #6f42c1;
+      --mw-code-type: #22863a;
+      --mw-code-invalid: #b31d28;
+    }
+    html.mw-pdf-export .milkdown {
+      --crepe-color-background: #ffffff;
+      --crepe-color-on-background: #000000;
+      --crepe-color-surface: #f7f7f7;
+      --crepe-color-surface-low: #ededed;
+      --crepe-color-on-surface: #1c1c1c;
+      --crepe-color-on-surface-variant: #4d4d4d;
+      --crepe-color-outline: #a8a8a8;
+      --crepe-color-primary: #333333;
+      --crepe-color-secondary: #cfcfcf;
+      --crepe-color-on-secondary: #000000;
+      --crepe-color-inverse: #f0f0f0;
+      --crepe-color-on-inverse: #1a1a1a;
+      --crepe-color-inline-code: #ba1a1a;
+      --crepe-color-error: #ba1a1a;
+      --crepe-color-hover: #e0e0e0;
+      --crepe-color-selected: #d5d5d5;
+      --crepe-color-inline-area: #cacaca;
+    }
+
+    @media print {
+      html, body, #app, .milkdown {
+        width: auto !important;
+        height: auto !important;
+        min-height: 0 !important;
+        overflow: visible !important;
+        background: #fff !important;
+      }
+      body.outline-open #app { padding-left: 0 !important; }
+      .milkdown .editor,
+      .milkdown .ProseMirror {
+        width: auto !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+      }
+      #outline,
+      #find-bar,
+      #source,
+      .milkdown-block-handle,
+      .milkdown-slash-menu,
+      .milkdown-link-preview,
+      .link-preview,
+      .mw-math-edit,
+      .milkdown-latex-inline-edit,
+      .milkdown-image-block .operation,
+      .milkdown-image-block .image-resize-handle,
+      .milkdown-code-block .tools {
+        display: none !important;
+      }
+      .milkdown, .milkdown * {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      .milkdown .ProseMirror-selectednode,
+      .milkdown .milkdown-code-block.selected,
+      .milkdown .milkdown-image-block.selected,
+      .milkdown .milkdown-image-inline.selected {
+        outline: none !important;
+        background: transparent !important;
+      }
+      .milkdown h1,
+      .milkdown h2,
+      .milkdown h3,
+      .milkdown h4,
+      .milkdown h5,
+      .milkdown h6 {
+        break-after: avoid-page;
+      }
+      .milkdown tr,
+      .milkdown img,
+      .milkdown figure,
+      .milkdown .milkdown-image-block {
+        break-inside: avoid-page;
+      }
+      .milkdown table { width: 100%; }
+      .milkdown pre,
+      .milkdown pre code,
+      .milkdown .cm-content,
+      .milkdown .cm-line {
+        white-space: pre-wrap !important;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      /* CodeMirror's 100%-height scroller fragments across pages as a tall
+         scrollbar. Let code blocks participate in normal print flow. */
+      .milkdown .milkdown-code-block,
+      .milkdown .milkdown-code-block .cm-editor,
+      .milkdown .milkdown-code-block .cm-scroller {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+      }
+      .milkdown .milkdown-code-block .cm-content {
+        min-height: 0 !important;
+      }
+      .milkdown img {
+        max-width: 100% !important;
+        height: auto !important;
+      }
+    }
   </style>
 </head>
 <body>
