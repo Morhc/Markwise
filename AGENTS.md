@@ -138,7 +138,8 @@ Icon caches are sticky. To force a refresh: `touch Markwise.app`, and if needed
 | Editor behavior, JS↔Swift bridge | `src/editor.js` | Defines `window.MW`; posts `{type}` messages to native via `webkit.messageHandlers.bridge`. |
 | Inline equations | `src/latex.js` | Click-to-edit popup, adjacent-equation merging. Works around Crepe's broken LaTeX tooltip. |
 | Superscript/subscript | `src/supsub.js` | `sup`/`sub` marks + remark parse/stringify so they round-trip as `<sup>`/`<sub>`. |
-| Image alt text | `src/imageblock.js` | Patches Milkdown's `image-block` schema, which otherwise stores the aspect ratio in the markdown `alt` field and destroys the description on save. |
+| Image alt text, width attr | `src/imageblock.js` | Patches Milkdown's `image-block` schema, which otherwise stores the aspect ratio in the markdown `alt` field and destroys the description on save. Adds a `width` attribute; a resized image serializes as `<img … width="N">` HTML. |
+| Image resizing | `src/imageresize.js` | Corner drag handle + remark transform parsing standalone `<img>` tags back into image blocks. |
 | Code-block theme, language list | `src/codeblock.js` | CodeMirror highlight style; explicit `bash` entry. |
 | Native window, menus, open/save/export, dirty state | `swift/main.swift` | `AppDelegate` + `DocumentWindow`. File open via `application(_:open:)`; save and PDF export use the `window.MW` bridge. |
 | HTML shell + custom CSS (link color, layout, source view, equation popup) | `app/web/index.html` | Loads `bundle.js` / `bundle.css`. |
@@ -158,7 +159,8 @@ Swift → JS, all via `evaluateJavaScript`:
 | `window.MW.setOutline(bool)` / `setSource(bool)` | Show/hide the outline sidebar and the raw-source view. Swift owns the state so menu checkmarks stay in sync. |
 | `window.MW.toggleMark(name)` | Toggle an inline mark (`"sup"` / `"sub"`) over the selection. |
 | `window.MW.setBaseURL(href)` | Re-point relative paths (used after Save As). |
-| `window.MW.preparePdfExport()` / `finishPdfExport()` | Enter and leave the shared print state. Preparation renders source-view edits, waits for fonts and images, and reports missing images before the native host creates a PDF. |
+| `window.MW.preparePdfExport({textScale})` / `finishPdfExport()` | Enter and leave the shared print state. Preparation renders source-view edits, waits for fonts and images, and reports missing images before the native host creates a PDF. `textScale` (0.25–2) applies the export's Scale option as a font-size scale so the text reflows; the native side keeps `NSPrintInfo.scalingFactor` at 1. |
+| `window.MW.setTextScale(percent)` | Settings ▸ Text size (50–300). Font-size scaling via calc() overrides in index.html — deliberately not CSS `zoom`, which scaled images, broke caret drawing on scale changes and leaked into hit-testing. |
 | `window.MW.setImageSrc(src)` / `insertImages(srcs, x, y)` | Replies to an `editImage` prompt; insert dropped/pasted images. |
 | `window.MW.primeSpellCheck()` | Walk the caret over every block so WebKit marks the whole document, not just the block the caret is in. |
 | `window.MW.nativeReply(id, value)` | Answers a request the editor made with an `id` (see `saveImage`). |

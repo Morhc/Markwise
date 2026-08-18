@@ -10,6 +10,97 @@ let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
 
+// MARK: - Settings window (⌘,)
+
+/// A small panel for the two things worth keeping between launches: how the app
+/// looks, and how big the text is. Both are stored in UserDefaults and applied
+/// to every open document, so the window is a view onto that state rather than
+/// an owner of it.
+final class SettingsWindow: NSObject, NSWindowDelegate {
+    let window: NSWindow
+    private weak var app: AppDelegate?
+    private let scaleValue = NSTextField(labelWithString: "100%")
+    private let scaleSlider = NSSlider()
+    private let appearancePopup = NSPopUpButton()
+
+    init(app: AppDelegate) {
+        self.app = app
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 168),
+                          styleMask: [.titled, .closable],
+                          backing: .buffered, defer: false)
+        super.init()
+        window.title = "Settings"
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        build()
+        window.center()
+    }
+
+    private func label(_ text: String, y: CGFloat) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.frame = NSRect(x: 20, y: y, width: 90, height: 20)
+        field.alignment = .right
+        return field
+    }
+
+    private func build() {
+        guard let content = window.contentView else { return }
+
+        content.addSubview(label("Appearance:", y: 112))
+        appearancePopup.frame = NSRect(x: 120, y: 106, width: 160, height: 26)
+        appearancePopup.addItems(withTitles: ["Match System", "Light", "Dark"])
+        appearancePopup.target = self
+        appearancePopup.action = #selector(appearanceChanged)
+        content.addSubview(appearancePopup)
+
+        content.addSubview(label("Text size:", y: 64))
+        scaleSlider.frame = NSRect(x: 120, y: 58, width: 200, height: 24)
+        scaleSlider.minValue = 50
+        scaleSlider.maxValue = 250
+        scaleSlider.numberOfTickMarks = 9   // every 25%
+        scaleSlider.allowsTickMarkValuesOnly = false
+        scaleSlider.target = self
+        scaleSlider.action = #selector(scaleChanged)
+        content.addSubview(scaleSlider)
+
+        scaleValue.frame = NSRect(x: 328, y: 62, width: 52, height: 20)
+        content.addSubview(scaleValue)
+
+        let hint = NSTextField(wrappingLabelWithString: "Text size affects the editor only. PDF export has its own scale, set when you export.")
+        hint.frame = NSRect(x: 120, y: 14, width: 260, height: 36)
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        content.addSubview(hint)
+
+        refresh()
+    }
+
+    /// Pull the current values in, so the window always shows the real state
+    /// (it can be changed from the View menu too).
+    func refresh() {
+        guard let app else { return }
+        switch app.appearancePreference {
+        case "light": appearancePopup.selectItem(at: 1)
+        case "dark": appearancePopup.selectItem(at: 2)
+        default: appearancePopup.selectItem(at: 0)
+        }
+        scaleSlider.integerValue = app.textScale
+        scaleValue.stringValue = "\(app.textScale)%"
+    }
+
+    @objc private func appearanceChanged() {
+        let values = ["system", "light", "dark"]
+        app?.setAppearance(values[min(appearancePopup.indexOfSelectedItem, 2)])
+    }
+
+    @objc private func scaleChanged() {
+        // Round to 5% so dragging lands on tidy numbers.
+        let value = (scaleSlider.integerValue / 5) * 5
+        scaleValue.stringValue = "\(value)%"
+        app?.setTextScale(value)
+    }
+}
+
 // MARK: - App delegate (application-level: menus, window set, routing)
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -245,11 +336,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func setAppearance(_ value: String) {
         UserDefaults.standard.set(value, forKey: AppDelegate.appearanceKey)
         applyAppearance()
+        // The View menu can change this too; keep the open window in step.
+        settingsWindow?.refresh()
     }
 
     @objc func useSystemAppearance(_ sender: Any?) { setAppearance("system") }
     @objc func useLightAppearance(_ sender: Any?) { setAppearance("light") }
     @objc func useDarkAppearance(_ sender: Any?) { setAppearance("dark") }
+
+    // MARK: Text size
+
+    static let textScaleKey = "MWTextScale"
+
+    /// Percentage the editor's text is scaled by. Editor only — the PDF export
+    /// carries its own scale, so a comfortable reading size doesn't decide what
+    /// a document looks like on paper.
+    var textScale: Int {
+        let stored = UserDefaults.standard.integer(forKey: AppDelegate.textScaleKey)
+        return stored == 0 ? 100 : min(300, max(50, stored))
+    }
+
+    func setTextScale(_ percent: Int) {
+        let value = min(300, max(50, percent))
+        UserDefaults.standard.set(value, forKey: AppDelegate.textScaleKey)
+        for doc in documents { doc.applyTextScale(value) }
+        settingsWindow?.refresh()
+    }
+
+    @objc func zoomIn(_ sender: Any?) { setTextScale(textScale + 10) }
+    @objc func zoomOut(_ sender: Any?) { setTextScale(textScale - 10) }
+    @objc func zoomActualSize(_ sender: Any?) { setTextScale(100) }
+
+    // MARK: Settings
+
+    var settingsWindow: SettingsWindow?
+
+    @objc func showSettings(_ sender: Any?) {
+        if settingsWindow == nil { settingsWindow = SettingsWindow(app: self) }
+        settingsWindow?.refresh()
+        settingsWindow?.window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     /// Catch the super/subscript shortcuts ourselves.
     ///
@@ -261,6 +388,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func installFormatKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+            // ⌘+ is typed as ⌘⇧=, which the Zoom In menu item can't match; the
+            // unshifted ⌘= reaches the menu on its own.
+            if flags.contains(.command), !flags.contains(.control), !flags.contains(.option),
+               event.charactersIgnoringModifiers == "+" {
+                self?.zoomIn(nil)
+                return nil
+            }
+
             guard flags.contains(.command), flags.contains(.control), !flags.contains(.option),
                   let doc = self?.activeDocument, !doc.sourceVisible
             else { return event }
@@ -289,6 +425,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
         appMenu.addItem(withTitle: "About Markwise", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide Markwise", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit Markwise", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -398,6 +536,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appearanceMenu.addItem(withTitle: "Dark", action: #selector(useDarkAppearance(_:)), keyEquivalent: "")
         viewMenu.addItem(appearanceItem)
         viewMenu.addItem(NSMenuItem.separator())
+        // The same setting the Settings window shows, reachable while reading.
+        // Bound to "=" rather than "+": AppKit won't match a shifted punctuation
+        // key equivalent, so ⌘+ would never fire from the keyboard. The monitor
+        // in `installFormatKeyMonitor` accepts the shifted form as well.
+        viewMenu.addItem(withTitle: "Zoom In", action: #selector(zoomIn(_:)), keyEquivalent: "=")
+        viewMenu.addItem(withTitle: "Zoom Out", action: #selector(zoomOut(_:)), keyEquivalent: "-")
+        viewMenu.addItem(withTitle: "Actual Size", action: #selector(zoomActualSize(_:)), keyEquivalent: "0")
+        viewMenu.addItem(NSMenuItem.separator())
         // Full screen on ⌃⌘F so it doesn't clash with Find (⌘F).
         let fullScreen = NSMenuItem(title: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullScreen.keyEquivalentModifierMask = [.command, .control]
@@ -469,6 +615,10 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     var isDirty = false
     var webReady = false
     var isExportingPDF = false
+    /// Export options chosen on the save sheet, held for the run of one export.
+    var exportScale = 100
+    var exportPaper = 0
+    var exportMargin = 0
     /// Whether the document outline sidebar is showing (off by default).
     var outlineVisible = false
     /// Whether the raw-markdown source view is showing (off by default).
@@ -578,6 +728,12 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     /// Ask this window to open a file, now or once its editor is ready.
     func requestOpen(_ url: URL) {
         if webReady { openFile(url) } else { pendingURL = url }
+    }
+
+    /// Scale the editor's text. Applied on load too, so a window opened later
+    /// matches the windows already on screen.
+    func applyTextScale(_ percent: Int) {
+        webView.evaluateJavaScript("window.MW.setTextScale(\(percent))", completionHandler: nil)
     }
 
     /// Nothing is coming — show an empty document instead.
@@ -715,6 +871,7 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         case "ready":
             webReady = true
             applySpellCheckingPreference()
+            if let scale = app?.textScale, scale != 100 { applyTextScale(scale) }
             if let url = pendingURL {
                 pendingURL = nil
                 openFile(url)
@@ -1248,6 +1405,76 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         if let url = currentURL { writeMarkdown(to: url) } else { saveAs() }
     }
 
+    // Export options live on the save sheet rather than in Settings: they belong
+    // to the document you're producing, not to how you like to work. Paper and
+    // margins are remembered, since most people settle on one and keep it.
+    // Scale is NOT: a remembered scale silently shrinks every later export,
+    // which reads as a broken layout, so each export starts back at 100%.
+    static let exportPaperKey = "MWExportPaper"
+    static let exportMarginKey = "MWExportMargin"
+
+    /// Margin presets, in points (72pt = 1 inch).
+    static let marginPresets: [(name: String, points: CGFloat)] = [
+        ("Normal (0.5\")", 36), ("Narrow (0.25\")", 18), ("Wide (1\")", 72),
+    ]
+    /// Paper presets, in points.
+    static let paperPresets: [(name: String, size: NSSize)] = [
+        ("US Letter", NSSize(width: 612, height: 792)), ("A4", NSSize(width: 595, height: 842)),
+    ]
+
+    private var exportScaleField: NSTextField?
+    private var exportPaperPopup: NSPopUpButton?
+    private var exportMarginPopup: NSPopUpButton?
+
+    private func buildExportAccessory() -> NSView {
+        let defaults = UserDefaults.standard
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 330, height: 96))
+
+        func label(_ text: String, y: CGFloat) -> NSTextField {
+            let f = NSTextField(labelWithString: text)
+            f.frame = NSRect(x: 8, y: y, width: 74, height: 20)
+            f.alignment = .right
+            return f
+        }
+
+        view.addSubview(label("Scale:", y: 66))
+        let scale = NSTextField(frame: NSRect(x: 90, y: 64, width: 56, height: 22))
+        scale.integerValue = 100
+        view.addSubview(scale)
+        let stepper = NSStepper(frame: NSRect(x: 150, y: 62, width: 18, height: 26))
+        stepper.minValue = 25; stepper.maxValue = 200; stepper.increment = 5
+        stepper.integerValue = scale.integerValue
+        stepper.target = self
+        stepper.action = #selector(exportScaleStepped(_:))
+        view.addSubview(stepper)
+        let pct = NSTextField(labelWithString: "%")
+        pct.frame = NSRect(x: 172, y: 66, width: 20, height: 20)
+        view.addSubview(pct)
+        exportScaleField = scale
+
+        view.addSubview(label("Paper:", y: 38))
+        let paper = NSPopUpButton(frame: NSRect(x: 88, y: 32, width: 150, height: 26))
+        paper.addItems(withTitles: DocumentWindow.paperPresets.map(\.name))
+        paper.selectItem(at: min(defaults.integer(forKey: DocumentWindow.exportPaperKey),
+                                 DocumentWindow.paperPresets.count - 1))
+        view.addSubview(paper)
+        exportPaperPopup = paper
+
+        view.addSubview(label("Margins:", y: 10))
+        let margins = NSPopUpButton(frame: NSRect(x: 88, y: 4, width: 150, height: 26))
+        margins.addItems(withTitles: DocumentWindow.marginPresets.map(\.name))
+        margins.selectItem(at: min(defaults.integer(forKey: DocumentWindow.exportMarginKey),
+                                   DocumentWindow.marginPresets.count - 1))
+        view.addSubview(margins)
+        exportMarginPopup = margins
+
+        return view
+    }
+
+    @objc private func exportScaleStepped(_ sender: NSStepper) {
+        exportScaleField?.integerValue = sender.integerValue
+    }
+
     func exportPDF() {
         guard webReady, !isExportingPDF else { return }
         isExportingPDF = true
@@ -1256,12 +1483,23 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         panel.allowedContentTypes = [.pdf]
         let basename = currentURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
         panel.nameFieldStringValue = "\(basename).pdf"
+        panel.accessoryView = buildExportAccessory()
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             guard response == .OK, let destination = panel.url else {
                 self.isExportingPDF = false
                 return
             }
+            // Remember paper and margins (not scale), then hold them for this export.
+            let defaults = UserDefaults.standard
+            let scale = min(200, max(25, self.exportScaleField?.integerValue ?? 100))
+            let paper = max(0, self.exportPaperPopup?.indexOfSelectedItem ?? 0)
+            let margin = max(0, self.exportMarginPopup?.indexOfSelectedItem ?? 0)
+            defaults.set(paper, forKey: DocumentWindow.exportPaperKey)
+            defaults.set(margin, forKey: DocumentWindow.exportMarginKey)
+            self.exportScale = scale
+            self.exportPaper = paper
+            self.exportMargin = margin
             self.preparePDFExport(to: destination)
         }
     }
@@ -1271,8 +1509,12 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     /// report an unsupported result type and the export would always look like it
     /// had failed to prepare. `callAsyncJavaScript` is the one that waits.
     private func preparePDFExport(to destination: URL) {
-        webView.callAsyncJavaScript("return await window.MW.preparePdfExport()",
-                                    arguments: [:], in: nil, in: .page) { [weak self] result in
+        // The Scale option travels to the editor as a text scale, so the
+        // document re-wraps at the new size (see writePDF for why it is not
+        // NSPrintInfo.scalingFactor).
+        webView.callAsyncJavaScript("return await window.MW.preparePdfExport({ textScale: scale })",
+                                    arguments: ["scale": Double(exportScale) / 100],
+                                    in: nil, in: .page) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let value):
@@ -1294,10 +1536,19 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
     private func writePDF(to destination: URL) {
         let printInfo = NSPrintInfo.shared.copy() as! NSPrintInfo
-        printInfo.topMargin = 36
-        printInfo.bottomMargin = 36
-        printInfo.leftMargin = 36
-        printInfo.rightMargin = 36
+        let margin = DocumentWindow.marginPresets[min(exportMargin, DocumentWindow.marginPresets.count - 1)].points
+        printInfo.paperSize = DocumentWindow.paperPresets[min(exportPaper, DocumentWindow.paperPresets.count - 1)].size
+        // Always 1: the Scale option reflows the document at a different text
+        // size (applied in preparePdfExport) instead of shrinking or blowing up
+        // the 100% layout on the page, which is all scalingFactor can do. Set
+        // explicitly because NSPrintInfo.shared can carry a leftover factor
+        // from a print panel.
+        printInfo.scalingFactor = 1
+
+        printInfo.topMargin = margin
+        printInfo.bottomMargin = margin
+        printInfo.leftMargin = margin
+        printInfo.rightMargin = margin
         printInfo.horizontalPagination = .fit
         printInfo.verticalPagination = .automatic
         printInfo.jobDisposition = .save

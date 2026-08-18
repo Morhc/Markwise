@@ -8,10 +8,20 @@
 //
 // This patches the schema (which lives in a ctx slice keyed by node id, so it
 // can be amended rather than replaced) to give the node a real `alt` attribute
-// and to stop the ratio being written to the file. The cost is that a resized
-// image no longer remembers its size across a save — a fair trade against
-// destroying text the user wrote.
+// and to stop the ratio being written to the file.
+//
+// Sizes survive anyway, through a `width` attribute (px; 0 = natural size)
+// set by the corner-drag handle in src/imageresize.js. An image with a width
+// serializes as literal HTML — `<img src="…" alt="…" width="400" />` — which
+// GitHub, Typora and Pandoc all render; the remark transformer in
+// imageresize.js parses that form back into this node. An image at natural
+// size keeps the plain `![alt](src)` spelling.
 import { imageBlockSchema } from '@milkdown/kit/component/image-block'
+
+/// Attribute-position escaping for the serialized <img> tag.
+function escapeAttr(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+}
 
 /// Alt text that is only a number is a ratio written by the old behaviour, not
 /// a description — recognise it so documents already mangled don't display
@@ -31,6 +41,7 @@ export function patchImageBlock(ctx) {
       attrs: {
         ...base.attrs,
         alt: { default: '', validate: 'string' },
+        width: { default: 0, validate: 'number' },
       },
       parseDOM: [
         {
@@ -40,9 +51,21 @@ export function patchImageBlock(ctx) {
             alt: dom.getAttribute('alt') || '',
             caption: dom.getAttribute('caption') || '',
             ratio: Number(dom.getAttribute('ratio') ?? 1),
+            width: Number(dom.getAttribute('width')) || 0,
           }),
         },
       ],
+      // `width="0"` on an <img> collapses it, so the attribute only appears on
+      // an actually-resized image. (toDOM feeds copy/paste, not the on-screen
+      // rendering — that's Crepe's own view component.)
+      toDOM: (node) => {
+        const { width, ...attrs } = node.attrs
+        return ['img', {
+          'data-type': 'image-block',
+          ...attrs,
+          ...(width > 0 ? { width: Math.round(width) } : {}),
+        }]
+      },
       parseMarkdown: {
         match: base.parseMarkdown.match,
         runner: (state, node, type) => {
@@ -52,17 +75,27 @@ export function patchImageBlock(ctx) {
             alt: legacy == null ? (node.alt ?? '') : '',
             caption: node.title ?? '',
             ratio: legacy ?? 1,
+            width: Number(node.width) > 0 ? Math.round(Number(node.width)) : 0,
           })
         },
       },
       toMarkdown: {
         match: base.toMarkdown.match,
         runner: (state, node) => {
+          const { src, alt, caption, width } = node.attrs
+          if (width > 0) {
+            let tag = `<img src="${escapeAttr(src)}"`
+            if (alt) tag += ` alt="${escapeAttr(alt)}"`
+            if (caption) tag += ` title="${escapeAttr(caption)}"`
+            tag += ` width="${Math.round(width)}" />`
+            state.addNode('html', undefined, tag)
+            return
+          }
           state.openNode('paragraph')
           state.addNode('image', undefined, undefined, {
-            title: node.attrs.caption,
-            url: node.attrs.src,
-            alt: node.attrs.alt ?? '',
+            title: caption,
+            url: src,
+            alt: alt ?? '',
           })
           state.closeNode()
         },

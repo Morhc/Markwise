@@ -124,7 +124,75 @@
        ~82px of clearance or it clips at the window edge. This padding is
        measured from the text column, so the handle stays visible at ANY
        window width. */
-    .milkdown .editor { max-width: 860px; margin: 0 auto; padding: 32px 88px 64px; }
+    /* `--mw-scale` is the Settings ▸ Text size control. It scales the *text* —
+       font-size, not CSS `zoom` — because a text size shouldn't move anything
+       else: the column stays 860px (smaller text = more words per line), images
+       stay the size the author chose, and ProseMirror's caret and hit-testing
+       keep working in real page coordinates. (`zoom` broke all three: images
+       scaled with the text, the counter-zoomed image wrapper still shrank
+       whenever `max-width: 100%` clamped the picture to the scaled column, and
+       WebKit kept drawing the caret where it would have been at the old factor.)
+
+       Crepe hard-codes its type scale in px, so each size is restated below as
+       calc(px × scale). Everything sized relative to text — inline code (87.5%),
+       KaTeX (em) — follows automatically, as does anything that just inherits
+       (table cells, code blocks, list labels). Spacing that participates in the
+       type rhythm (line-height, heading margins, the list-marker box) scales
+       with it; structural spacing (column padding, blockquote bar, hr) does not. */
+    .milkdown .editor {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 32px 88px 64px;
+      font-size: calc(16px * var(--mw-scale, 1));
+    }
+    .milkdown .ProseMirror h1 { font-size: calc(42px * var(--mw-scale, 1)); line-height: calc(50px * var(--mw-scale, 1)); margin-top: calc(32px * var(--mw-scale, 1)); }
+    .milkdown .ProseMirror h2 { font-size: calc(36px * var(--mw-scale, 1)); line-height: calc(44px * var(--mw-scale, 1)); margin-top: calc(28px * var(--mw-scale, 1)); }
+    .milkdown .ProseMirror h3 { font-size: calc(32px * var(--mw-scale, 1)); line-height: calc(40px * var(--mw-scale, 1)); margin-top: calc(24px * var(--mw-scale, 1)); }
+    .milkdown .ProseMirror h4 { font-size: calc(28px * var(--mw-scale, 1)); line-height: calc(36px * var(--mw-scale, 1)); margin-top: calc(20px * var(--mw-scale, 1)); }
+    .milkdown .ProseMirror h5 { font-size: calc(24px * var(--mw-scale, 1)); line-height: calc(32px * var(--mw-scale, 1)); margin-top: calc(16px * var(--mw-scale, 1)); }
+    .milkdown .ProseMirror h6 { font-size: calc(18px * var(--mw-scale, 1)); line-height: calc(28px * var(--mw-scale, 1)); margin-top: calc(16px * var(--mw-scale, 1)); }
+    .milkdown .ProseMirror p  { font-size: calc(16px * var(--mw-scale, 1)); line-height: calc(24px * var(--mw-scale, 1)); padding: calc(4px * var(--mw-scale, 1)) 0; }
+    /* The list marker sits in a fixed 32px box that lines up with a paragraph's
+       32px first line (24px line-height + 4px padding each side); scale the box
+       so bullets and numbers stay centred on that first line. */
+    .milkdown .milkdown-list-item-block li .label-wrapper,
+    .milkdown .milkdown-list-item-block li .label-wrapper .label { height: calc(32px * var(--mw-scale, 1)); }
+    /* Resized images (src/imageresize.js): the node's width attr is mirrored
+       onto the <img> as --mw-img-w + data-mw-width. !important because Crepe's
+       viewer writes an inline height from its ratio logic, and its 100px
+       min-height (with object-fit: cover) would crop a small image instead of
+       shrinking it. max-width: 100% still wins over width, so an oversized
+       stored width clamps to the column — and to the page when printing. */
+    .milkdown .editor .milkdown-image-block img[data-mw-width] {
+      width: var(--mw-img-w) !important;
+      height: auto !important;
+      min-height: 0 !important;
+      /* Crepe clamps images to the column; a deliberately-sized one may
+         overflow it (centred — see applyWidth in src/imageresize.js). */
+      max-width: none !important;
+    }
+    /* Crepe's own handle drags height only and stored a lossy ratio; the
+       corner handle replaces it. */
+    .milkdown .editor .milkdown-image-block .image-resize-handle { display: none; }
+    .mw-image-resize {
+      position: absolute;
+      right: -7px;
+      bottom: -7px;
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      border: 2px solid var(--mw-bg);
+      background: var(--mw-link);
+      cursor: nwse-resize;
+      opacity: 0;
+      transition: opacity .15s;
+      z-index: 2;
+      /* Capture the pointer cleanly during the drag. */
+      touch-action: none;
+    }
+    .milkdown .editor .image-wrapper:hover > .mw-image-resize,
+    .mw-image-resize.dragging { opacity: 1; }
+
     /* Links: classic blue, underlined, pointer cursor. */
     .milkdown .editor a,
     .milkdown .editor a * { color: var(--mw-link) !important; text-decoration: underline; cursor: pointer; }
@@ -161,6 +229,11 @@
     @media (max-width: 1036px) { #source { padding-left: 88px; padding-right: 88px; } }
     body.source-open #source { display: block; }
     body.source-open #app { display: none; }
+    /* The outline sidebar pushes #app aside with padding, but #source is
+       positioned over the whole window — give it the same clearance, or the
+       sidebar covers the first 240px of the text. The centring calc uses
+       percentages, so the column re-centres in what remains. */
+    body.outline-open #source { left: 240px; width: auto; }
 
     /* --- Inline LaTeX ------------------------------------------------------ */
     /* Crepe pads equations by 4px a side, which shows up as a gap that isn't in
@@ -285,6 +358,15 @@
     .outline-item.h5 { padding-left: 56px; color: var(--mw-faint) !important; }
     .outline-item.h6 { padding-left: 68px; color: var(--mw-faint) !important; }
 
+    /* The editor's text size is a reading comfort, not a property of the
+       document — while capturing, swap it for the export's own Scale option
+       (`--mw-print-scale`, set by preparePdfExport; 1 when absent). That scale
+       is typographic: at 50% the text is half-size and re-wraps to fill the
+       full printable width, rather than the 100% layout shrunk on the page.
+       !important so this outranks the inline custom property that
+       setTextScale puts on <html>. */
+    html.mw-pdf-export { --mw-scale: var(--mw-print-scale, 1) !important; }
+
     /* PDF export is deliberately print-friendly even when the editor is dark. */
     html.mw-pdf-export {
       color-scheme: light;
@@ -358,6 +440,7 @@
       .milkdown-latex-inline-edit,
       .milkdown-image-block .operation,
       .milkdown-image-block .image-resize-handle,
+      .mw-image-resize,
       .milkdown-code-block .tools {
         display: none !important;
       }
@@ -386,6 +469,19 @@
       .milkdown .milkdown-image-block {
         break-inside: avoid-page;
       }
+      /* WebKit can't split a flex container across pages, and Crepe lays each
+         list item out as one (marker beside content). A list item taller than
+         the space left on the page therefore can't be broken and is pushed to
+         the next page whole, stranding inches of blank behind it. Floating the
+         marker instead leaves the content as ordinary block flow, which
+         fragments normally. 34px = the 24px marker plus its 10px gap. */
+      /* !important throughout: Crepe's own selector is more specific, and
+         applying only part of this would indent twice while still not letting
+         the item break. */
+      .milkdown li.list-item { display: block !important; }
+      .milkdown li.list-item > .label-wrapper { float: left !important; }
+      .milkdown li.list-item > .children { margin-left: 34px !important; }
+
       .milkdown table { width: 100%; }
       .milkdown pre,
       .milkdown pre code,
@@ -410,6 +506,16 @@
       .milkdown img {
         max-width: 100% !important;
         height: auto !important;
+      }
+      /* A resized image wider than the page clamps back to it (this needs to
+         out-rank the on-screen `max-width: none`, hence the full selector),
+         and the JS margin that centres its overflow on screen would push a
+         clamped image off-centre, so auto margins take over. */
+      .milkdown .editor .milkdown-image-block img[data-mw-width] {
+        max-width: 100% !important;
+      }
+      .milkdown .editor .image-wrapper {
+        margin: 0 auto !important;
       }
     }
   </style>

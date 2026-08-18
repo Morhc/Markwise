@@ -15,6 +15,7 @@ import { codeMirrorTheme, codeLanguages } from './codeblock.js'
 import { mathPlugins, MATH_INLINE } from './latex.js'
 import { supSubPlugins, supSubStringifyHandlers } from './supsub.js'
 import { patchImageBlock } from './imageblock.js'
+import { imageResizePlugins } from './imageresize.js'
 
 // Read a File as a self-contained data: URL so dropped/pasted images persist in
 // the saved markdown (Crepe's default uploader uses ephemeral blob: URLs).
@@ -254,6 +255,9 @@ async function openNow(markdown, baseHref) {
   // over the paragraph and the handle jumps to it. Only ever anchor to blocks.
   // Stop image alt text being overwritten with the aspect ratio.
   crepe.editor.config(patchImageBlock)
+  // Corner-drag image resizing, persisted as `<img … width="N">` (see
+  // src/imageresize.js).
+  crepe.editor.use(imageResizePlugins)
   crepe.editor.config((ctx) => {
     ctx.update(blockConfig.key, (prev) => ({
       ...prev,
@@ -367,6 +371,22 @@ function markSaved() {
   if (crepe) baseline = crepe.getMarkdown()
 }
 
+// --- Text size --------------------------------------------------------------
+// This is a *text* size, not a magnifier, so it drives font-size (see the
+// calc() overrides in index.html), never CSS `zoom`. Zoom scaled the whole
+// layout: images grew with the text, anything sized relative to the scaled
+// column changed width, and WebKit drew the caret at the unzoomed coordinates
+// after the factor changed. Font-size leaves layout, images and the caret
+// alone; Crepe hard-codes its type scale in px, so index.html restates those
+// px values multiplied by this property. It's applied as a custom property
+// rather than an inline style so it survives the editor being rebuilt on
+// every open.
+function setTextScale(percent) {
+  const pct = Math.min(300, Math.max(50, Math.round(Number(percent) || 100)))
+  document.documentElement.style.setProperty('--mw-scale', String(pct / 100))
+  return pct
+}
+
 // --- PDF export -------------------------------------------------------------
 // Native hosts generate the PDF, while the shared renderer owns the temporary
 // printable state. This keeps both platforms visually consistent and ensures
@@ -396,7 +416,7 @@ async function waitForPdfImages(timeoutMs = 10000) {
     .map((img) => img.currentSrc || img.getAttribute('src') || '(unknown image)')
 }
 
-async function preparePdfExport() {
+async function preparePdfExport(options) {
   if (pdfExportState) return { ok: false, busy: true, missingImages: [] }
 
   const appScroller = document.getElementById('app')
@@ -412,6 +432,14 @@ async function preparePdfExport() {
   pdfExportState = state
 
   if (sourceVisible) await setSource(false)
+  // The export's Scale option is a typography scale, not a magnifier: 50%
+  // means half-size text that re-wraps to fill the full printable width, so
+  // more words fit per line — not the 100% layout photocopied smaller (which
+  // is what NSPrintInfo.scalingFactor does, so the native side leaves that
+  // at 1). Applied through the same font-size mechanism as the on-screen
+  // text size; mw-pdf-export swaps `--mw-scale` for this print value.
+  const textScale = Math.min(2, Math.max(0.25, Number(options?.textScale) || 1))
+  document.documentElement.style.setProperty('--mw-print-scale', String(textScale))
   document.documentElement.classList.add('mw-pdf-export')
   try { document.activeElement?.blur() } catch (e) { /* noop */ }
   hideBlockHandle()
@@ -427,6 +455,7 @@ async function finishPdfExport() {
   if (!state) return
   pdfExportState = null
   document.documentElement.classList.remove('mw-pdf-export')
+  document.documentElement.style.removeProperty('--mw-print-scale')
 
   if (state.sourceWasVisible) {
     await setSource(true)
@@ -794,7 +823,7 @@ async function insertImages(srcs, x, y) {
 window.MW = {
   open, getMarkdown, markSaved, setOutline, toggleOutline, setImageSrc, insertImages,
   toggleMark: toggleTextMark,
-  setSource, setBaseURL, primeSpellCheck, nativeReply, mergeInputs,
+  setSource, setBaseURL, primeSpellCheck, nativeReply, mergeInputs, setTextScale,
   preparePdfExport, finishPdfExport,
   // Test hook: lets the offscreen-WKWebView harness drive the document model
   // directly. Not used by the app itself.

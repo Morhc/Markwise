@@ -30,6 +30,12 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
 - **Pasted images land on disk** — paste or drop a picture (including one copied
   from a web page) and it's written to an `images/` folder beside the document
   and linked relatively, instead of being inlined as a base64 blob.
+- **Resizable images** — drag the corner handle; the size is saved as portable
+  `<img … width="N">` HTML that GitHub, Typora and Pandoc all render.
+- **Export as PDF** — ⇧⌘E, with scale, paper and margin options; the scale
+  reflows the text rather than shrinking the page.
+- **Text size** — set your reading size in Settings (⌘,); it scales the text,
+  never the images, and doesn't leak into exports.
 - **Spell checking** — the system spell checker, over the whole document as soon
   as it opens, with the usual Edit ▸ Spelling menu.
 - **Dark mode** — follows the system by default; View ▸ Appearance pins it.
@@ -84,6 +90,8 @@ Or in Finder: right-click any `.md` → **Get Info** → **Open with: Markwise**
 | Save As             | ⇧⌘S      |
 | Reload from disk    | ⌘R       |
 | Show in Finder      | ⌥⌘R      |
+| Export as PDF       | ⇧⌘E      |
+| Settings            | ⌘,       |
 | Close               | ⌘W       |
 | Find                | ⌘F       |
 | Markdown source     | ⌘/       |
@@ -140,6 +148,19 @@ and doesn't carry base64. An image copied from a web page is downloaded once so
 the document doesn't depend on that server later. Untitled documents have no
 folder to write into, so images stay embedded until you save the file somewhere.
 
+Hover an image and drag the corner handle to resize it — up to the image's own
+resolution, past the text column if you like (it stays centred). Double-click
+the handle to return to the natural size. A resized image is saved as
+`<img src="images/name.png" alt="…" width="400" />`, which GitHub, Typora and
+Pandoc all render; at natural size it keeps the plain `![alt](src)` form.
+
+**Exporting to PDF.** ⇧⌘E. The Scale option is typographic: at 50% the text is
+half-size and re-wraps to fill the full printable width — more words per line,
+fewer pages — rather than printing the 100% layout smaller. Paper size and
+margins are remembered between exports; the scale deliberately resets to 100%.
+The export always uses light colours and your Settings text size never affects
+it.
+
 ## Project layout
 
 ```
@@ -148,6 +169,7 @@ markwise/
 ├── src/latex.js       # Inline-equation editing and merging
 ├── src/supsub.js      # <sup>/<sub> marks + markdown round-tripping
 ├── src/imageblock.js  # Keeps image alt text out of Milkdown's ratio field
+├── src/imageresize.js # Corner-drag image resizing, saved as <img … width="N">
 ├── src/codeblock.js   # Code-block theme and language list
 ├── swift/main.swift   # Native macOS host: window, menus, file open/save
 ├── app/
