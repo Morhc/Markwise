@@ -1,0 +1,124 @@
+/* Quick Look preview stylesheet — Markwise's own look, statically.
+ *
+ * The palette is copied from app/web/index.html and the type scale from the
+ * editor (Crepe's px sizes restated), so the preview matches what opening the
+ * file in Markwise shows. KaTeX's stylesheet rides along with its fonts
+ * inlined as data URIs (see build.mjs), since the preview can't touch the
+ * network or the filesystem. */
+@import 'katex/dist/katex.min.css';
+
+:root {
+  --mw-bg: #ffffff;
+  --mw-text: #24292e;
+  --mw-link: #0b66c3;
+  --mw-panel: #f7f7f8;
+  --mw-panel-border: #e4e4e7;
+  --mw-heading: #3f3f46;
+  --mw-muted: #52525b;
+  --mw-inline-code: #ba1a1a;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --mw-bg: #1a1a1a;
+    --mw-text: #e2e2e2;
+    --mw-link: #6fb3ff;
+    --mw-panel: #202020;
+    --mw-panel-border: #303030;
+    --mw-heading: #d4d4d4;
+    --mw-muted: #b0b0b0;
+    --mw-inline-code: #ff9e9e;
+  }
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--mw-bg);
+  color: var(--mw-text);
+  /* The editor's own stacks (Crepe's frame theme), so the preview resolves
+     to exactly the fonts Markwise shows — body and code inherit the default
+     stack, headings take the serif title stack, matching the app. */
+  font-family: 'Noto Sans', Arial, Helvetica, sans-serif;
+  padding: 32px 44px 64px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The editor's type scale (Crepe's px sizes). */
+h1, h2, h3, h4, h5, h6 {
+  color: var(--mw-heading);
+  font-family: 'Noto Serif', Cambria, 'Times New Roman', Times, serif;
+  font-weight: 400;
+  padding: 2px 0;
+}
+h1 { font-size: 42px; line-height: 50px; margin-top: 32px; }
+h2 { font-size: 36px; line-height: 44px; margin-top: 28px; }
+h3 { font-size: 32px; line-height: 40px; margin-top: 24px; }
+h4 { font-size: 28px; line-height: 36px; margin-top: 20px; }
+h5 { font-size: 24px; line-height: 32px; margin-top: 16px; }
+h6 { font-size: 18px; line-height: 28px; margin-top: 16px; font-weight: 700; }
+h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
+
+p { font-size: 16px; line-height: 24px; padding: 4px 0; }
+ul, ol { padding-left: 26px; }
+li { font-size: 16px; line-height: 24px; padding: 4px 0; }
+li > ul, li > ol { padding-top: 0; }
+
+a { color: var(--mw-link); text-decoration: underline; }
+
+code {
+  font-family: 'Space Mono', Fira Code, Menlo, Monaco, 'Courier New', Courier, monospace;
+  font-size: 87.5%;
+  color: var(--mw-inline-code);
+  background: var(--mw-panel);
+  padding: 0 3px;
+  border-radius: 4px;
+}
+pre {
+  background: var(--mw-panel);
+  border: 1px solid var(--mw-panel-border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+pre code { color: var(--mw-text); background: transparent; padding: 0; }
+
+blockquote {
+  position: relative;
+  padding-left: 40px;
+  margin: 4px 0;
+  color: var(--mw-muted);
+}
+blockquote::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 4px; bottom: 4px;
+  width: 4px;
+  border-radius: 100px;
+  background: var(--mw-panel-border);
+}
+
+hr { border: none; border-top: 1px solid var(--mw-panel-border); margin: 16px 0; }
+
+table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 16px;
+  line-height: 24px;
+}
+th, td {
+  border: 1px solid var(--mw-panel-border);
+  padding: 4px 16px;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 600; background: var(--mw-panel); }
+
+img { max-width: 100%; height: auto; }
+/* A figure of its own (the editor's image blocks) sits centred. */
+p:has(> img:only-child) { text-align: center; }
+
+.katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
+
+input[type='checkbox'] { margin-right: 6px; }

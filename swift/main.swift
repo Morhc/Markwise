@@ -1,6 +1,7 @@
 import AppKit
 import WebKit
 import UniformTypeIdentifiers
+import Vision
 
 // MARK: - App entry
 
@@ -307,6 +308,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case #selector(useDarkAppearance(_:)):
             item.state = appearancePreference == "dark" ? .on : .off
             return true
+        case #selector(chooseFont(_:)):
+            item.state = (item.representedObject as? String ?? "") == fontFamily ? .on : .off
+            return true
+        case #selector(showFontPicker(_:)):
+            // Other… carries the checkmark when the active font came from it.
+            let curated = AppDelegate.fontChoices.contains { $0.family == fontFamily }
+            item.state = (!fontFamily.isEmpty && !curated) ? .on : .off
+            return true
         default:
             return true
         }
@@ -366,6 +375,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func zoomIn(_ sender: Any?) { setTextScale(textScale + 10) }
     @objc func zoomOut(_ sender: Any?) { setTextScale(textScale - 10) }
     @objc func zoomActualSize(_ sender: Any?) { setTextScale(100) }
+
+    // MARK: Font
+
+    static let fontKey = "MWFontFamily"
+
+    /// View ▸ Font choices: display name to the CSS family the editor gets.
+    /// "-apple-system" is a keyword, not a family — macOS hides its system
+    /// fonts from web content by name, so San Francisco is only reachable
+    /// that way. An empty family means the editor's own default faces.
+    static let fontChoices: [(title: String, family: String)] = [
+        ("Default", ""),
+        ("System (San Francisco)", "-apple-system"),
+        ("Avenir Next", "Avenir Next"),
+        ("Charter", "Charter"),
+        ("Georgia", "Georgia"),
+        ("Helvetica Neue", "Helvetica Neue"),
+        ("Iowan Old Style", "Iowan Old Style"),
+        ("Palatino", "Palatino"),
+        ("Times New Roman", "Times New Roman"),
+    ]
+
+    /// The chosen editor font family ("" = the editor's default faces).
+    /// Applies everywhere the document is rendered, including PDF export.
+    var fontFamily: String {
+        UserDefaults.standard.string(forKey: AppDelegate.fontKey) ?? ""
+    }
+
+    func setFontFamily(_ family: String) {
+        UserDefaults.standard.set(family, forKey: AppDelegate.fontKey)
+        // Flush to disk now: the Quick Look extension reads the plist file
+        // directly (it can't reach the app's defaults domain from its
+        // sandbox), and cfprefsd writes lazily.
+        UserDefaults.standard.synchronize()
+        for doc in documents { doc.applyFontFamily(family) }
+    }
+
+    @objc func chooseFont(_ sender: NSMenuItem) {
+        setFontFamily(sender.representedObject as? String ?? "")
+    }
+
+    var fontPicker: FontPickerWindow?
+
+    @objc func showFontPicker(_ sender: Any?) {
+        if fontPicker == nil { fontPicker = FontPickerWindow(app: self) }
+        fontPicker?.show()
+    }
 
     // MARK: Settings
 
@@ -535,6 +590,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appearanceMenu.addItem(withTitle: "Light", action: #selector(useLightAppearance(_:)), keyEquivalent: "")
         appearanceMenu.addItem(withTitle: "Dark", action: #selector(useDarkAppearance(_:)), keyEquivalent: "")
         viewMenu.addItem(appearanceItem)
+        // Font: the face the document is shown — and exported — in.
+        let fontItem = NSMenuItem(title: "Font", action: nil, keyEquivalent: "")
+        let fontMenu = NSMenu(title: "Font")
+        fontItem.submenu = fontMenu
+        for choice in AppDelegate.fontChoices {
+            let item = NSMenuItem(title: choice.title, action: #selector(chooseFont(_:)), keyEquivalent: "")
+            item.representedObject = choice.family
+            fontMenu.addItem(item)
+            if choice.family.isEmpty { fontMenu.addItem(NSMenuItem.separator()) }
+        }
+        fontMenu.addItem(NSMenuItem.separator())
+        // Every installed family, searchable, previewed in its own face.
+        fontMenu.addItem(withTitle: "Other…", action: #selector(showFontPicker(_:)), keyEquivalent: "")
+        viewMenu.addItem(fontItem)
         viewMenu.addItem(NSMenuItem.separator())
         // The same setting the Settings window shows, reachable while reading.
         // Bound to "=" rather than "+": AppKit won't match a shifted punctuation
@@ -571,6 +640,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// files to the editor as data URIs. Non-image drags fall through to WebKit.
 final class EditorWebView: WKWebView {
     var onImageFilesDropped: (([URL], NSPoint) -> Bool)?
+    var onCopyTextFromImage: (() -> Void)?
+    var onOpenImageInPreview: (() -> Void)?
+
+    /// Add image commands to the context menu WebKit builds for an image
+    /// (recognised by the Copy Image item it includes). The image the click
+    /// landed on arrives separately, over the bridge, from the page's own
+    /// contextmenu listener.
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        let onImage = menu.items.contains {
+            $0.identifier?.rawValue == "WKMenuItemIdentifierCopyImage"
+        }
+        guard onImage else { return }
+        // "Copy Text" grabs everything Vision can read in one go; "Open in
+        // Preview" is for selecting a *portion* of the text — Preview has
+        // Live Text, which WKWebView doesn't offer.
+        let preview = NSMenuItem(title: "Open Image in Preview",
+                                 action: #selector(openImageInPreview(_:)),
+                                 keyEquivalent: "")
+        preview.target = self
+        menu.insertItem(preview, at: 0)
+        let copyText = NSMenuItem(title: "Copy Text from Image",
+                                  action: #selector(copyTextFromImage(_:)),
+                                  keyEquivalent: "")
+        copyText.target = self
+        menu.insertItem(copyText, at: 0)
+    }
+
+    @objc private func copyTextFromImage(_ sender: Any?) {
+        onCopyTextFromImage?()
+    }
+
+    @objc private func openImageInPreview(_ sender: Any?) {
+        onOpenImageInPreview?()
+    }
     private let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "tif", "heic"]
 
     private func imageURLs(_ sender: NSDraggingInfo) -> [URL] {
@@ -596,6 +700,147 @@ final class EditorWebView: WKWebView {
     }
 }
 
+// MARK: - Font picker (View ▸ Font ▸ Other…)
+
+/// A searchable list of every installed font family, each row drawn in its
+/// own face. Clicking a row applies it to every open document immediately —
+/// the live document is the preview — and the choice persists like one made
+/// from the curated menu. Dot-prefixed families are filtered out: they're the
+/// system's hidden faces, and WebKit refuses them by name anyway.
+final class FontPickerWindow: NSObject, NSWindowDelegate, NSTableViewDataSource,
+                              NSTableViewDelegate, NSSearchFieldDelegate {
+    let window: NSWindow
+    private weak var app: AppDelegate?
+    private let searchField = NSSearchField()
+    private let table = NSTableView()
+    private let allFamilies: [String]
+    private var filtered: [String]
+    /// True while selection is being set from code, so re-highlighting the
+    /// current font after a search doesn't re-apply it.
+    private var selectingProgrammatically = false
+
+    init(app: AppDelegate) {
+        self.app = app
+        allFamilies = NSFontManager.shared.availableFontFamilies
+            .filter { !$0.hasPrefix(".") }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        filtered = allFamilies
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 480),
+                          styleMask: [.titled, .closable, .resizable],
+                          backing: .buffered, defer: false)
+        super.init()
+        window.title = "Choose Font"
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 260, height: 300)
+        window.delegate = self
+        build()
+        window.center()
+    }
+
+    private func build() {
+        guard let content = window.contentView else { return }
+        searchField.frame = NSRect(x: 12, y: content.bounds.height - 34,
+                                   width: content.bounds.width - 24, height: 24)
+        searchField.autoresizingMask = [.width, .minYMargin]
+        searchField.placeholderString = "Search fonts"
+        searchField.delegate = self
+        content.addSubview(searchField)
+
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0,
+                                                width: content.bounds.width,
+                                                height: content.bounds.height - 44))
+        scroll.autoresizingMask = [.width, .height]
+        scroll.hasVerticalScroller = true
+        let column = NSTableColumn(identifier: .init("family"))
+        table.addTableColumn(column)
+        table.headerView = nil
+        table.rowHeight = 26
+        table.style = .inset
+        table.dataSource = self
+        table.delegate = self
+        scroll.documentView = table
+        content.addSubview(scroll)
+    }
+
+    func show() {
+        searchField.stringValue = ""
+        filtered = allFamilies
+        table.reloadData()
+        selectCurrent()
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(searchField)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func selectCurrent() {
+        selectingProgrammatically = true
+        defer { selectingProgrammatically = false }
+        if let current = app?.fontFamily, let index = filtered.firstIndex(of: current) {
+            table.selectRowIndexes([index], byExtendingSelection: false)
+            table.scrollRowToVisible(index)
+        } else {
+            table.deselectAll(nil)
+        }
+    }
+
+    // MARK: search
+
+    func controlTextDidChange(_ obj: Notification) {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
+        filtered = query.isEmpty
+            ? allFamilies
+            : allFamilies.filter { $0.localizedCaseInsensitiveContains(query) }
+        table.reloadData()
+        selectCurrent()
+    }
+
+    /// Return in the search field applies the first match — type "gara⏎" and
+    /// you're reading Garamond.
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)),
+              let first = filtered.first else { return false }
+        app?.setFontFamily(first)
+        selectCurrent()
+        return true
+    }
+
+    // MARK: table
+
+    func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?,
+                   row: Int) -> NSView? {
+        let family = filtered[row]
+        let reuse = NSUserInterfaceItemIdentifier("fontCell")
+        let cell = tableView.makeView(withIdentifier: reuse, owner: nil) as? NSTableCellView ?? {
+            let cell = NSTableCellView()
+            cell.identifier = reuse
+            let text = NSTextField(labelWithString: "")
+            text.translatesAutoresizingMaskIntoConstraints = false
+            text.lineBreakMode = .byTruncatingTail
+            cell.addSubview(text)
+            cell.textField = text
+            NSLayoutConstraint.activate([
+                text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+        }()
+        cell.textField?.stringValue = family
+        cell.textField?.font = NSFontManager.shared.font(withFamily: family, traits: [],
+                                                         weight: 5, size: 14)
+            ?? NSFont.systemFont(ofSize: 14)
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !selectingProgrammatically, table.selectedRow >= 0 else { return }
+        app?.setFontFamily(filtered[table.selectedRow])
+    }
+}
+
 // MARK: - Document window (per-window: one file, its editor, find bar, state)
 
 final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
@@ -615,6 +860,9 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     var isDirty = false
     var webReady = false
     var isExportingPDF = false
+    /// The image under the most recent right-click, reported by the page's
+    /// contextmenu listener; nil when the click wasn't on an image.
+    var contextImageURL: URL?
     /// Export options chosen on the save sheet, held for the run of one export.
     var exportScale = 100
     var exportPaper = 0
@@ -703,6 +951,12 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             self.webView.evaluateJavaScript("window.MW.insertImages(\(json), \(cssX), \(cssY))", completionHandler: nil)
             return true
         }
+        editorWebView.onCopyTextFromImage = { [weak self] in
+            self?.copyTextFromContextImage()
+        }
+        editorWebView.onOpenImageInPreview = { [weak self] in
+            self?.openContextImageInPreview()
+        }
         webView = editorWebView
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -734,6 +988,13 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     /// matches the windows already on screen.
     func applyTextScale(_ percent: Int) {
         webView.evaluateJavaScript("window.MW.setTextScale(\(percent))", completionHandler: nil)
+    }
+
+    /// Set the editor's font family ("" restores the default faces).
+    func applyFontFamily(_ family: String) {
+        guard let json = try? JSONSerialization.data(withJSONObject: [family]),
+              let list = String(data: json, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.MW.setFontFamily(\(list)[0])", completionHandler: nil)
     }
 
     /// Nothing is coming — show an empty document instead.
@@ -872,6 +1133,7 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             webReady = true
             applySpellCheckingPreference()
             if let scale = app?.textScale, scale != 100 { applyTextScale(scale) }
+            if let font = app?.fontFamily, !font.isEmpty { applyFontFamily(font) }
             if let url = pendingURL {
                 pendingURL = nil
                 openFile(url)
@@ -889,6 +1151,9 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             if let href = body["href"] as? String { openExternal(href) }
         case "editImage":
             editImageSource(current: body["src"] as? String ?? "")
+        case "contextImage":
+            let src = body["src"] as? String ?? ""
+            contextImageURL = src.isEmpty ? nil : URL(string: src)
         case "saveImage":
             saveImageBeside(id: body["id"] as? Int ?? 0,
                             dataURL: body["data"] as? String,
@@ -1056,6 +1321,67 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     // MARK: Image source editing (double-click an image)
 
     /// Prompt to change an image's source: edit the text, or pick a file.
+    /// "Copy Text from Image": recognise the text in the right-clicked image
+    /// (the Vision framework — the same engine as Live Text) and put it on the
+    /// pasteboard. WKWebView has no built-in Live Text selection, so a menu
+    /// command is the practical way to get text out of a pasted screenshot.
+    func copyTextFromContextImage() {
+        guard let url = contextImageURL else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var lines: [String] = []
+            var failure = "The image could not be read."
+            // Handles file: and data: URLs; anything network-backed blocks
+            // here, off the main thread, which is fine for a menu action.
+            if let data = try? Data(contentsOf: url),
+               let source = CGImageSourceCreateWithData(data as CFData, nil),
+               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .accurate
+                request.usesLanguageCorrection = true
+                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+                if (try? handler.perform([request])) != nil {
+                    lines = (request.results ?? []).compactMap {
+                        $0.topCandidates(1).first?.string
+                    }
+                    failure = "No text was found in the image."
+                }
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if lines.isEmpty {
+                    self.presentError("Copy Text from Image", failure)
+                    return
+                }
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(lines.joined(separator: "\n"), forType: .string)
+            }
+        }
+    }
+
+    /// "Open Image in Preview": for selecting part of the text in a figure —
+    /// Preview has Live Text, which a WKWebView doesn't offer. An embedded
+    /// (data:) image is written to a temporary file first.
+    func openContextImageInPreview() {
+        guard var url = contextImageURL else { return }
+        if !url.isFileURL {
+            guard let data = try? Data(contentsOf: url) else {
+                presentError("Open Image in Preview", "The image could not be read.")
+                return
+            }
+            let temp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("markwise-image-\(ProcessInfo.processInfo.globallyUniqueString).png")
+            guard (try? data.write(to: temp)) != nil else {
+                presentError("Open Image in Preview", "The image could not be read.")
+                return
+            }
+            url = temp
+        }
+        let preview = URL(fileURLWithPath: "/System/Applications/Preview.app")
+        NSWorkspace.shared.open([url], withApplicationAt: preview,
+                                configuration: NSWorkspace.OpenConfiguration())
+    }
+
     func editImageSource(current: String) {
         let alert = NSAlert()
         alert.messageText = "Edit image source"

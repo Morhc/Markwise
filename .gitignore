@@ -5,6 +5,7 @@ node_modules/
 Markwise.app/
 app/web/bundle.js
 app/web/bundle.css
+app/ql/
 
 # Transient icon render
 app/icon.svg.png

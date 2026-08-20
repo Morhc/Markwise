@@ -81,21 +81,34 @@ function imageOf(view, pos) {
   return dom?.querySelector?.('.image-wrapper img') ?? null
 }
 
+// The stored width is a *preference*, not a command: the image renders at
+// min(stored width, what fits) so a figure sized on a big screen shrinks to
+// fit a small window instead of being cut off, and springs back when the
+// window grows. "What fits" is measured per image, not taken from 100vw: the
+// image centres on its own block, and an indented block (in a list, say) is
+// off-centre in the window, so the room available is twice the distance from
+// that block's centre to the nearer window edge. The variables live on the
+// wrapper (the CSS derives both the image width and the centring margin from
+// them — a parent can't read a child's custom property).
+const EDGE_MARGIN = 16
+
 function applyWidth(img, width) {
   const wrapper = img.closest('.image-wrapper')
+  if (!wrapper) return
   if (width > 0) {
-    img.style.setProperty('--mw-img-w', `${Math.round(width)}px`)
-    img.setAttribute('data-mw-width', String(Math.round(width)))
-    // A sized image may be wider than the text column. The wrapper is
-    // fit-content with `margin: 0 auto`, which stops centring the moment the
-    // content overflows, so centre it explicitly: 50% of the column minus
-    // half the image. Comes out identical to auto margins when it fits, and
-    // symmetric overflow into both margins when it doesn't.
-    if (wrapper) wrapper.style.marginLeft = `calc(50% - ${Math.round(width / 2)}px)`
+    const block = img.closest('.milkdown-image-block')
+    if (block) {
+      const rect = block.getBoundingClientRect()
+      const centre = rect.left + rect.width / 2
+      const room = 2 * Math.min(centre - EDGE_MARGIN, window.innerWidth - EDGE_MARGIN - centre)
+      wrapper.style.setProperty('--mw-img-max', `${Math.max(MIN_WIDTH, Math.round(room))}px`)
+    }
+    wrapper.style.setProperty('--mw-img-w', `${Math.round(width)}px`)
+    wrapper.setAttribute('data-mw-width', String(Math.round(width)))
   } else {
-    img.style.removeProperty('--mw-img-w')
-    img.removeAttribute('data-mw-width')
-    if (wrapper) wrapper.style.removeProperty('margin-left')
+    wrapper.style.removeProperty('--mw-img-w')
+    wrapper.style.removeProperty('--mw-img-max')
+    wrapper.removeAttribute('data-mw-width')
   }
 }
 
@@ -194,10 +207,21 @@ export const imageResizePlugin = $prose(() => {
         if (wrapper) ensureHandle(view, wrapper)
       }
       view.dom.addEventListener('mouseover', heal)
+      // The available room is measured from the window and the block's own
+      // position, so remeasure when the window resizes and when the outline
+      // sidebar opens or closes (a body class change that shifts the column).
+      const remeasure = () => sync(view)
+      window.addEventListener('resize', remeasure)
+      const bodyClasses = new MutationObserver(remeasure)
+      bodyClasses.observe(document.body, { attributes: true, attributeFilter: ['class'] })
       sync(view)
       return {
         update: () => sync(view),
-        destroy: () => view.dom.removeEventListener('mouseover', heal),
+        destroy: () => {
+          view.dom.removeEventListener('mouseover', heal)
+          window.removeEventListener('resize', remeasure)
+          bodyClasses.disconnect()
+        },
       }
     },
   })

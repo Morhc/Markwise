@@ -142,6 +142,7 @@ Icon caches are sticky. To force a refresh: `touch Markwise.app`, and if needed
 | Image resizing | `src/imageresize.js` | Corner drag handle + remark transform parsing standalone `<img>` tags back into image blocks. |
 | Code-block theme, language list | `src/codeblock.js` | CodeMirror highlight style; explicit `bash` entry. |
 | Native window, menus, open/save/export, dirty state | `swift/main.swift` | `AppDelegate` + `DocumentWindow`. File open via `application(_:open:)`; save and PDF export use the `window.MW` bridge. |
+| Quick Look preview | `swift/preview.swift`, `src/qlpreview.js`, `src/qlpreview.css` | An .appex in `Contents/PlugIns` (assembled and ad-hoc signed by `build.sh` — extensions must be signed and sandboxed to load). Markdown→HTML via JavaScriptCore (`MWQL.render`), images inlined as data: URIs, shown in a JS-disabled WKWebView. Entry point is `_NSExtensionMain`, set by linker flag. |
 | HTML shell + custom CSS (link color, layout, source view, equation popup) | `app/web/index.html` | Loads `bundle.js` / `bundle.css`. |
 | Bundler config / asset inlining | `build.mjs` | esbuild; non-CSS assets use `dataurl` loader. |
 | File-type associations, bundle id, version | `Info.plist` | `CFBundleDocumentTypes` + `UTImportedTypeDeclarations` for markdown. Bundle id: `com.josh.markwise`. |

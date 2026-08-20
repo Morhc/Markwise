@@ -162,6 +162,28 @@ document.addEventListener('paste', (e) => {
   insertImages(srcs, null, null)
 }, true)
 
+// Pasting a URL onto selected text turns the selection into a link (the way
+// Google Docs, Notion and GitHub behave) instead of replacing the words with
+// the bare address. Only a lone URL triggers this; pasting prose that happens
+// to contain a link, or pasting with nothing selected, behaves as before.
+// Capture phase, like the image paste above: Crepe has its own URL-paste
+// handling that would otherwise swallow the event first.
+document.addEventListener('paste', (e) => {
+  if (!view) return
+  const text = e.clipboardData?.getData('text/plain')?.trim() ?? ''
+  if (!/^(https?:\/\/|www\.)\S+$/i.test(text)) return
+  const { selection } = view.state
+  if (selection.empty || !(selection instanceof TextSelection)) return
+  // Inside a code block the paste should stay literal.
+  if (selection.$from.parent.type.spec.code) return
+  const linkType = view.state.schema.marks.link
+  if (!linkType) return
+  e.preventDefault()
+  e.stopPropagation()
+  const href = /^www\./i.test(text) ? `https://${text}` : text
+  view.dispatch(view.state.tr.addMark(selection.from, selection.to, linkType.create({ href })))
+}, true)
+
 // Build image nodes (block images, so they support captions) for the given
 // sources and insert them at `pos` (or the current selection).
 function insertImagesAt(srcs, pos) {
@@ -385,6 +407,26 @@ function setTextScale(percent) {
   const pct = Math.min(300, Math.max(50, Math.round(Number(percent) || 100)))
   document.documentElement.style.setProperty('--mw-scale', String(pct / 100))
   return pct
+}
+
+// --- Font ---------------------------------------------------------------
+// View ▸ Font. The chosen family lands in `--mw-font`, which index.html feeds
+// into both of Crepe's faces (body and headings); empty restores the theme's
+// own stacks. An inline custom property survives editor rebuilds and rides
+// into the PDF export unchanged, so print uses the same face as the screen.
+// `-apple-system` is passed through unquoted: macOS hides its system fonts
+// from web content by family name, and only the keyword reaches San Francisco.
+function setFontFamily(family) {
+  const name = String(family ?? '').trim()
+  const root = document.documentElement
+  if (!name) {
+    root.style.removeProperty('--mw-font')
+    return
+  }
+  const css = name === '-apple-system'
+    ? '-apple-system, sans-serif'
+    : `'${name.replace(/['"\\]/g, '')}', sans-serif`
+  root.style.setProperty('--mw-font', css)
 }
 
 // --- PDF export -------------------------------------------------------------
@@ -824,11 +866,21 @@ window.MW = {
   open, getMarkdown, markSaved, setOutline, toggleOutline, setImageSrc, insertImages,
   toggleMark: toggleTextMark,
   setSource, setBaseURL, primeSpellCheck, nativeReply, mergeInputs, setTextScale,
+  setFontFamily,
   preparePdfExport, finishPdfExport,
   // Test hook: lets the offscreen-WKWebView harness drive the document model
   // directly. Not used by the app itself.
   __view: () => view,
 }
+
+// Tell the native host which image (if any) a right-click landed on, so it
+// can offer "Copy Text from Image" in the context menu. The message races the
+// menu opening, but the click that picks a menu item comes long after this
+// has landed.
+document.addEventListener('contextmenu', (e) => {
+  const img = e.target.closest && e.target.closest('img')
+  post({ type: 'contextImage', src: img ? img.currentSrc || img.src || '' : '' })
+})
 
 // Double-click an image to change the file/URL it points to (handy for fixing
 // broken paths). The native host presents the picker and replies via setImageSrc.

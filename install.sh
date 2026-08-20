@@ -75,4 +75,11 @@ if [ "$count" != "1" ]; then
 fi
 echo "    OK: exactly one registration."
 
+echo "==> Activating the Quick Look preview extension"
+# Copying the app registers the extension with PluginKit; electing it makes
+# Quick Look actually use it, and the reset clears any cached plain-text
+# previews. Both are safe to re-run.
+pluginkit -e use -i com.josh.markwise.preview 2>/dev/null || true
+qlmanage -r >/dev/null 2>&1 || true
+
 echo "==> Done. Installed and set as the default .md app: $APP"

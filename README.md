@@ -68,6 +68,22 @@ time to reinstall the latest build.
 open ./Markwise.app
 ```
 
+## Rendered Quick Look previews
+
+Pressing space on a `.md` file in Finder shows the rendered document, in
+Markwise's own typography — headings, tables, images, and KaTeX math included.
+
+Quick Look never asks the default app for previews; it asks a *Quick Look
+extension*, so Markwise ships one inside the app
+(`Contents/PlugIns/MarkwisePreview.appex`). `build.sh` assembles it and
+`install.sh` activates it — nothing extra to install. The preview is static
+and safe by construction: the markdown is converted to HTML inside the
+sandboxed extension and displayed with JavaScript disabled, so scripts in a
+downloaded file are inert.
+
+If a preview ever shows plain text instead, check the toggle under
+**System Settings ▸ General ▸ Login Items & Extensions ▸ Quick Look**.
+
 ## Set as the default app for `.md` files
 
 `./install.sh` already does this. To (re)apply it on its own without a full install:
@@ -97,6 +113,7 @@ Or in Finder: right-click any `.md` → **Get Info** → **Open with: Markwise**
 | Markdown source     | ⌘/       |
 | Document outline    | ⌥⌘O      |
 | Appearance          | View menu |
+| Font                | View menu |
 | Superscript         | ⌃⌘+      |
 | Subscript           | ⌃⌘−      |
 | Full screen         | ⌃⌘F      |
@@ -171,7 +188,12 @@ markwise/
 ├── src/imageblock.js  # Keeps image alt text out of Milkdown's ratio field
 ├── src/imageresize.js # Corner-drag image resizing, saved as <img … width="N">
 ├── src/codeblock.js   # Code-block theme and language list
+├── src/qlpreview.js   # Quick Look renderer: markdown -> HTML (runs in JavaScriptCore)
+├── src/qlpreview.css  # Quick Look stylesheet (Markwise palette + KaTeX)
 ├── swift/main.swift   # Native macOS host: window, menus, file open/save
+├── swift/preview.swift        # Quick Look preview extension controller
+├── swift/preview-Info.plist   # The extension's NSExtension declaration
+├── swift/preview.entitlements # Sandbox entitlements (required to load)
 ├── app/
 │   ├── web/           # HTML shell + built bundle (bundle.js / bundle.css)
 │   ├── icon.svg       # App icon source

@@ -118,6 +118,14 @@
     }
     #app { height: 100vh; overflow: auto; }
     .milkdown { height: 100%; }
+    /* View ▸ Font: `--mw-font` (set inline on <html> by setFontFamily) swaps
+       both of Crepe's faces — body and headings alike — and falls back to the
+       frame theme's own stacks when no font is chosen. Code blocks keep their
+       monospace, and the PDF export inherits whatever is set here. */
+    .milkdown {
+      --crepe-font-default: var(--mw-font, 'Noto Sans', Arial, Helvetica, sans-serif);
+      --crepe-font-title: var(--mw-font, 'Noto Serif', Cambria, 'Times New Roman', Times, serif);
+    }
     /* The text fills the window: make it wider and lines get longer. There is
        deliberately no max-width column cap — the window edge is the reader's
        own line-length control. The generous side padding leaves room for the
@@ -158,19 +166,61 @@
     .milkdown .milkdown-list-item-block li .label-wrapper,
     .milkdown .milkdown-list-item-block li .label-wrapper .label { height: calc(32px * var(--mw-scale, 1)); }
     /* Resized images (src/imageresize.js): the node's width attr is mirrored
-       onto the <img> as --mw-img-w + data-mw-width. !important because Crepe's
-       viewer writes an inline height from its ratio logic, and its 100px
-       min-height (with object-fit: cover) would crop a small image instead of
-       shrinking it. max-width: 100% still wins over width, so an oversized
-       stored width clamps to the column — and to the page when printing. */
-    .milkdown .editor .milkdown-image-block img[data-mw-width] {
-      width: var(--mw-img-w) !important;
-      height: auto !important;
-      min-height: 0 !important;
-      /* Crepe clamps images to the column; a deliberately-sized one may
-         overflow it (centred — see applyWidth in src/imageresize.js). */
+       onto the image wrapper as --mw-img-w + data-mw-width. The rendered
+       width is min(stored, window) — the size the author chose, unless the
+       window is too small for it, in which case the figure scales down to fit
+       rather than being cut off. A deliberately-sized image may overflow the
+       text column into the margins, centred: 50% of the column minus half the
+       image is identical to auto-margin centring when it fits, and symmetric
+       overflow when it doesn't. !important throughout because Crepe's viewer
+       writes an inline height from its ratio logic, clamps to the column
+       (max-width), and has a 100px min-height (with object-fit: cover) that
+       would crop a small image instead of shrinking it.
+       --mw-img-max is measured per image by src/imageresize.js (twice the
+       distance from the image's own block centre to the nearer window edge),
+       so an indented figure clamps correctly too. */
+    .milkdown .editor .image-wrapper[data-mw-width] {
+      margin-left: calc(50% - min(var(--mw-img-w), var(--mw-img-max, 100vw)) / 2);
+    }
+    .milkdown .editor .image-wrapper[data-mw-width] img {
+      width: min(var(--mw-img-w), var(--mw-img-max, 100vw)) !important;
       max-width: none !important;
     }
+    /* EVERY document image keeps its own aspect ratio, always. Crepe's viewer
+       writes a fixed pixel height when the image loads, computed from the
+       column width at that moment; when the width later changes (window
+       resized, or the measurement was taken mid-layout on a fresh paste) the
+       width clamps but the stale height stays and `object-fit: cover` CROPS
+       the picture — until something recreates the view (e.g. moving the
+       image) and re-measures. Height follows width instead, and the 100px
+       min-height that would distort a small image goes too. */
+    .milkdown .editor .milkdown-image-block .image-wrapper img,
+    .milkdown .editor .milkdown-image-inline img {
+      height: auto !important;
+      min-height: 0 !important;
+    }
+    /* Clicking a figure selects it as one node, and Crepe marks that by
+       washing the whole image in the selection colour — over a screenshot it
+       reads as "all the text is highlighted", and text-in-image work is
+       offloaded to Preview anyway (Open Image in Preview). Show a thin
+       outline around the image instead, so cut/delete still have a visible
+       target without obscuring the figure. */
+    .milkdown .editor .milkdown-image-block.selected > .image-wrapper::before,
+    .milkdown .editor .milkdown-image-block.ProseMirror-selectednode > .image-wrapper::before {
+      background: transparent;
+    }
+    .milkdown .editor .milkdown-image-block.selected,
+    .milkdown .editor .milkdown-image-block.ProseMirror-selectednode {
+      background: transparent;
+      outline: none;
+    }
+    .milkdown .editor .milkdown-image-block.selected .image-wrapper img,
+    .milkdown .editor .milkdown-image-block.ProseMirror-selectednode .image-wrapper img {
+      outline: 2px solid var(--mw-link);
+      outline-offset: 1px;
+      border-radius: 2px;
+    }
+
     /* Crepe's own handle drags height only and stored a lossy ratio; the
        corner handle replaces it. */
     .milkdown .editor .milkdown-image-block .image-resize-handle { display: none; }
@@ -507,9 +557,9 @@
       }
       /* A resized image wider than the page clamps back to it (this needs to
          out-rank the on-screen `max-width: none`, hence the full selector),
-         and the JS margin that centres its overflow on screen would push a
+         and the margin that centres its overflow on screen would push a
          clamped image off-centre, so auto margins take over. */
-      .milkdown .editor .milkdown-image-block img[data-mw-width] {
+      .milkdown .editor .image-wrapper[data-mw-width] img {
         max-width: 100% !important;
       }
       .milkdown .editor .image-wrapper {
