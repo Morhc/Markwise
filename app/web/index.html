@@ -160,11 +160,26 @@
     .milkdown .ProseMirror h5 { font-size: calc(24px * var(--mw-scale, 1)); line-height: calc(32px * var(--mw-scale, 1)); margin-top: calc(16px * var(--mw-scale, 1)); }
     .milkdown .ProseMirror h6 { font-size: calc(18px * var(--mw-scale, 1)); line-height: calc(28px * var(--mw-scale, 1)); margin-top: calc(16px * var(--mw-scale, 1)); }
     .milkdown .ProseMirror p  { font-size: calc(16px * var(--mw-scale, 1)); line-height: calc(24px * var(--mw-scale, 1)); padding: calc(4px * var(--mw-scale, 1)) 0; }
-    /* The list marker sits in a fixed 32px box that lines up with a paragraph's
-       32px first line (24px line-height + 4px padding each side); scale the box
-       so bullets and numbers stay centred on that first line. */
+    /* The list marker sits in a 24x32px box (lining up with a paragraph's 32px
+       first line: 24px line-height + 4px padding each side) followed by a 10px
+       gap, and Crepe hard-codes every one of those numbers — including the
+       width and height *attributes* on the bullet's SVG, which no amount of
+       inherited font-size will touch. Left alone, a 50% PDF export prints
+       8px text beside a full-size dot, and a 200% one prints huge text beside
+       a speck. Scale the whole marker: the box, the gap it leaves before the
+       text, and the icon inside it (the bullet, and the two checkbox states).
+       Scaling the gap and box is also what indents nested lists to match. */
+    .milkdown .milkdown-list-item-block li { gap: calc(10px * var(--mw-scale, 1)); }
     .milkdown .milkdown-list-item-block li .label-wrapper,
-    .milkdown .milkdown-list-item-block li .label-wrapper .label { height: calc(32px * var(--mw-scale, 1)); }
+    .milkdown .milkdown-list-item-block li .label-wrapper .label {
+      height: calc(32px * var(--mw-scale, 1));
+      width: calc(24px * var(--mw-scale, 1));
+    }
+    .milkdown .milkdown-list-item-block li .label-wrapper svg {
+      width: calc(24px * var(--mw-scale, 1));
+      height: calc(24px * var(--mw-scale, 1));
+      flex: none;
+    }
     /* Resized images (src/imageresize.js): the node's width attr is mirrored
        onto the image wrapper as --mw-img-w + data-mw-width. The rendered
        width is min(stored, window) — the size the author chose, unless the
@@ -522,13 +537,14 @@
          the space left on the page therefore can't be broken and is pushed to
          the next page whole, stranding inches of blank behind it. Floating the
          marker instead leaves the content as ordinary block flow, which
-         fragments normally. 34px = the 24px marker plus its 10px gap. */
+         fragments normally. 34px = the 24px marker plus its 10px gap, scaled
+         with everything else so the indent tracks the export's Scale. */
       /* !important throughout: Crepe's own selector is more specific, and
          applying only part of this would indent twice while still not letting
          the item break. */
       .milkdown li.list-item { display: block !important; }
       .milkdown li.list-item > .label-wrapper { float: left !important; }
-      .milkdown li.list-item > .children { margin-left: 34px !important; }
+      .milkdown li.list-item > .children { margin-left: calc(34px * var(--mw-scale, 1)) !important; }
 
       .milkdown table { width: 100%; }
       .milkdown pre,

@@ -136,7 +136,8 @@ Icon caches are sticky. To force a refresh: `touch Markwise.app`, and if needed
 | Concern | File | Notes |
 |---|---|---|
 | Editor behavior, JS↔Swift bridge | `src/editor.js` | Defines `window.MW`; posts `{type}` messages to native via `webkit.messageHandlers.bridge`. |
-| Inline equations | `src/latex.js` | Click-to-edit popup, adjacent-equation merging. Works around Crepe's broken LaTeX tooltip. |
+| Inline equations | `src/latex.js` | Click-to-edit popup, adjacent-equation merging. Works around Crepe's broken LaTeX tooltip. Also decides what *isn't* an equation: `\$` is a literal dollar, and pandoc's whitespace condition keeps one literal dollar from capturing a later one. Applied twice over — a remark transform demotes the nodes remark-math already made on load, and `mathInputGuard` (a `handleTextInput` **view option**, consulted before any plugin's) keeps Crepe's un-removable input rule from seeing the keystroke. |
+| Styled inline HTML | `src/htmlspan.js` | `<span style=…>`, `<u>`, `<mark>` folded from `html` node pairs into marks and written back out, mirroring `supsub.js`. Attributes ride along as the raw source string. |
 | Superscript/subscript | `src/supsub.js` | `sup`/`sub` marks + remark parse/stringify so they round-trip as `<sup>`/`<sub>`. |
 | Image alt text, width attr | `src/imageblock.js` | Patches Milkdown's `image-block` schema, which otherwise stores the aspect ratio in the markdown `alt` field and destroys the description on save. Adds a `width` attribute; a resized image serializes as `<img … width="N">` HTML. |
 | Image resizing | `src/imageresize.js` | Corner drag handle + remark transform parsing standalone `<img>` tags back into image blocks. |

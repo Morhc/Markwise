@@ -21,8 +21,12 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
   double-click or ⌘-click a link to open it in your browser.
 - **Math** — `$E = mc^2$` renders with KaTeX. Click an equation to edit its LaTeX
   with a live preview; delete the space between two equations to merge them.
+  Write `\$` for a dollar that isn't maths.
 - **Superscript & subscript** — ⌃⌘+ and ⌃⌘−, written out as the `<sup>`/`<sub>`
   HTML that GitHub, Pandoc and Typora all render.
+- **Styled text** — `<span style="color:red">…</span>`, `<u>` and `<mark>` render
+  as what they describe instead of as visible tags, and save back as they were
+  written.
 - **See the raw markdown** — ⌘/ swaps the rendered view for an editable source
   view; edits made there flow back into the document.
 - **Relative image paths** — `![](images/pic.png)` resolves against the file's own
@@ -128,6 +132,28 @@ since `$a$$b$` isn't valid markdown for two.
 
 Superscript also answers to ⌃⌘= if you'd rather not reach for Shift.
 
+**Dollars that aren't maths.** Markdown gives `$` two jobs, so `I paid $5 and
+$10` has a perfectly good reading as an equation whose body is `5 and `. The
+escape is yours to write — `\$` is a literal dollar, here as everywhere else in
+markdown — and typing it does the WYSIWYG thing: the backslash resolves to the
+dollar it was escaping, and saving spells the escape back out.
+
+Two smaller things follow from that. Markwise won't read an equation whose
+opening `$` is followed by a space or whose closing `$` is preceded by one,
+which is the condition pandoc puts on inline maths and is what stops one
+literal dollar from capturing a later one; nothing is lost, since trailing
+space inside an equation means nothing to LaTeX. And a `$…$` pair that the rule
+turns down is written back escaped, so the file says plainly what it means.
+`$1$`, `$E = mc^2$` and `$^{44}\mathrm{Ti}$` are all equations, as before.
+
+**Styled text.** Markdown has no syntax for a coloured or underlined run, so
+the portable spelling is literal HTML, the same bargain `<sup>` and `<sub>`
+make. `<span style="color:red">important</span>`, `<u>underlined</u>` and
+`<mark>highlighted</mark>` render as what they describe — in the editor, in a
+PDF export and in a Quick Look preview — and are saved back with their
+attributes exactly as they were written. Other tags are left alone as the
+literal HTML they are.
+
 **Reloading.** ⌘R re-reads the file from disk, which is how you pick up edits
 made by another program. What it does depends on where the changes are:
 
@@ -187,6 +213,7 @@ markwise/
 ├── src/supsub.js      # <sup>/<sub> marks + markdown round-tripping
 ├── src/imageblock.js  # Keeps image alt text out of Milkdown's ratio field
 ├── src/imageresize.js # Corner-drag image resizing, saved as <img … width="N">
+├── src/htmlspan.js    # <span style=…>/<u>/<mark> as marks, round-tripped as HTML
 ├── src/codeblock.js   # Code-block theme and language list
 ├── src/qlpreview.js   # Quick Look renderer: markdown -> HTML (runs in JavaScriptCore)
 ├── src/qlpreview.css  # Quick Look stylesheet (Markwise palette + KaTeX)

@@ -12,8 +12,9 @@ import { blockConfig } from '@milkdown/kit/plugin/block'
 import { toggleMark } from '@milkdown/kit/prose/commands'
 import { TextSelection } from '@milkdown/kit/prose/state'
 import { codeMirrorTheme, codeLanguages } from './codeblock.js'
-import { mathPlugins, MATH_INLINE } from './latex.js'
+import { mathPlugins, mathInputGuard, MATH_INLINE } from './latex.js'
 import { supSubPlugins, supSubStringifyHandlers } from './supsub.js'
+import { htmlSpanPlugins, htmlSpanStringifyHandlers } from './htmlspan.js'
 import { patchImageBlock } from './imageblock.js'
 import { imageResizePlugins } from './imageresize.js'
 
@@ -256,14 +257,22 @@ async function openNow(markdown, baseHref) {
   })
   crepe.editor.use(linkInputRule)
   crepe.editor.use(taskListInputRule)
-  // Inline-equation editing, adjacent-equation merging (see src/latex.js).
+  // Inline-equation editing, adjacent-equation merging, and keeping money out
+  // of equations (see src/latex.js).
   mathPlugins({ isLoading: () => loading }).forEach((p) => crepe.editor.use(p))
-  // <sup>/<sub> marks (see src/supsub.js).
+  crepe.editor.config(mathInputGuard)
+  // <sup>/<sub> marks (see src/supsub.js), and the inline HTML that styles a
+  // run of text — <span style=…>, <u>, <mark> (see src/htmlspan.js).
   crepe.editor.use(supSubPlugins)
+  crepe.editor.use(htmlSpanPlugins)
   crepe.editor.config((ctx) => {
     ctx.update(remarkStringifyOptionsCtx, (prev) => ({
       ...prev,
-      handlers: { ...(prev?.handlers ?? {}), ...supSubStringifyHandlers },
+      handlers: {
+        ...(prev?.handlers ?? {}),
+        ...supSubStringifyHandlers,
+        ...htmlSpanStringifyHandlers,
+      },
     }))
   })
   // Typing `![alt](src)` doesn't create an image by default (commonmark ships an
