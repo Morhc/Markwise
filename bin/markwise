@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# markwise — open files in Markwise, and (with --wait) block until they are done.
+#
+# This exists for `$EDITOR`. The obvious spelling, `EDITOR="open -W -a Markwise"`,
+# waits for the wrong thing: `open -W` returns when the *application* quits, so
+# `git commit`, `crontab -e` and Claude Code's ⌃G all sit there as long as any
+# other Markwise window is open anywhere. Markwise notes each open document as a
+# file under ~/Library/Application Support/Markwise/open, named for the hash of
+# its path, and deletes it when that document's window closes. This script waits
+# on exactly that file, so it returns when you close the window you were sent to
+# edit and not before.
+#
+#   export EDITOR="markwise --wait"
+#
+# Without --wait it is just a way to open files from the shell.
+set -euo pipefail
+
+APP="${MARKWISE_APP:-/Applications/Markwise.app}"
+MARKERS="$HOME/Library/Application Support/Markwise/open"
+# Seconds to give Markwise to open the document before giving up on waiting.
+# A cold start is well under this.
+GRACE=20
+
+wait_for_close=0
+files=()
+for arg in "$@"; do
+    case "$arg" in
+        --wait|-w) wait_for_close=1 ;;
+        --help|-h)
+            sed -n '2,15p' "$0" | sed 's|^# \{0,1\}||'
+            exit 0 ;;
+        *) files+=("$arg") ;;
+    esac
+done
+
+if [ ${#files[@]} -eq 0 ]; then
+    open -a "$APP"
+    exit 0
+fi
+
+# Which marker belongs to a file comes down to agreeing on its path, and the
+# two sides normalise differently: `pwd -P` resolves /tmp and /var to their
+# real /private/... locations, while Foundation's `resolvingSymlinksInPath`
+# does the reverse and shortens /private/tmp back to /tmp. Rather than bet on
+# either, hash every spelling and watch for whichever marker turns up —
+# $TMPDIR is under /var, so an editor temp file always goes through this.
+candidates() {
+    local f="$1" dir base real
+    dir="$(dirname -- "$f")"
+    base="$(basename -- "$f")"
+    real="$(cd -- "$dir" 2>/dev/null && pwd -P || printf '%s' "$dir")/$base"
+    printf '%s\n' "$real" "${real#/private}" "$f"
+}
+
+hash_of() { printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1; }
+
+# The marker for $1 that currently exists, if any.
+existing_marker() {
+    local path candidate
+    while IFS= read -r path; do
+        candidate="$MARKERS/$(hash_of "$path")"
+        [ -e "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+    done < <(candidates "$1")
+    return 1
+}
+
+open -a "$APP" "${files[@]}"
+[ "$wait_for_close" -eq 1 ] || exit 0
+
+for f in "${files[@]}"; do
+    # A marker has to appear before it can go away; a document that never
+    # registers (Markwise failed to launch, or could not read the file) must
+    # not hang the caller forever.
+    ticks=0
+    until marker="$(existing_marker "$f")"; do
+        if [ "$ticks" -ge $((GRACE * 4)) ]; then
+            echo "markwise: $f never opened; not waiting" >&2
+            continue 2
+        fi
+        sleep 0.25
+        ticks=$((ticks + 1))
+    done
+    while [ -e "$marker" ]; do sleep 0.25; done
+done

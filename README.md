@@ -19,9 +19,10 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
 - **Editable everything** — headings, lists, tables, blockquotes, code blocks, links.
 - **Auto-linking** — type `[text](url)` and it converts to a real (blue) link;
   double-click or ⌘-click a link to open it in your browser.
-- **Math** — `$E = mc^2$` renders with KaTeX. Click an equation to edit its LaTeX
-  with a live preview; delete the space between two equations to merge them.
-  Write `\$` for a dollar that isn't maths.
+- **Math** — `$E = mc^2$` renders with KaTeX, at the size of the text around it.
+  Click an equation to edit its LaTeX with a live preview; delete the space
+  between two equations to merge them. A `$$ … $$` block shows the rendered
+  equation, not its source. Write `\$` for a dollar that isn't maths.
 - **Superscript & subscript** — ⌃⌘+ and ⌃⌘−, written out as the `<sup>`/`<sub>`
   HTML that GitHub, Pandoc and Typora all render.
 - **Styled text** — `<span style="color:red">…</span>`, `<u>` and `<mark>` render
@@ -39,7 +40,10 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
 - **Export as PDF** — ⇧⌘E, with scale, paper and margin options; the scale
   reflows the text rather than shrinking the page.
 - **Text size** — set your reading size in Settings (⌘,); it scales the text,
-  never the images, and doesn't leak into exports.
+  never the images, and doesn't leak into exports. ⌘+ and ⌘− zoom the window
+  you're in, and each file remembers the size you left it at.
+- **Works as your `$EDITOR`** — `markwise --wait` returns when you close the
+  document, so `git commit` and Claude Code's ⌃G stop waiting on it.
 - **Spell checking** — the system spell checker, over the whole document as soon
   as it opens, with the usual Edit ▸ Spelling menu.
 - **Dark mode** — follows the system by default; View ▸ Appearance pins it.
@@ -88,6 +92,21 @@ downloaded file are inert.
 If a preview ever shows plain text instead, check the toggle under
 **System Settings ▸ General ▸ Login Items & Extensions ▸ Quick Look**.
 
+## Using Markwise as your `$EDITOR`
+
+`install.sh` puts a `markwise` command in `~/.local/bin`. Point your editor
+variable at it:
+
+```bash
+export EDITOR="markwise --wait"
+```
+
+The obvious spelling, `EDITOR="open -W -a Markwise"`, waits for the wrong thing:
+`open -W` returns when the *application* quits, so `git commit`, `crontab -e`
+and Claude Code's ⌃G all sit there for as long as any other Markwise window is
+open anywhere. `markwise --wait` waits for the one document it was asked to
+open, and returns when you close that window.
+
 ## Set as the default app for `.md` files
 
 `./install.sh` already does this. To (re)apply it on its own without a full install:
@@ -116,6 +135,8 @@ Or in Finder: right-click any `.md` → **Get Info** → **Open with: Markwise**
 | Find                | ⌘F       |
 | Markdown source     | ⌘/       |
 | Document outline    | ⌥⌘O      |
+| Zoom in / out       | ⌘+ / ⌘−  |
+| Actual size         | ⌘0       |
 | Appearance          | View menu |
 | Font                | View menu |
 | Superscript         | ⌃⌘+      |
@@ -126,9 +147,36 @@ Open a file, edit it inline, press ⌘S. That's it.
 
 **Working with equations.** Type `$x^2$` to create one. Click a rendered
 equation to reopen its LaTeX in a small field with a live preview — Enter
-commits, Escape cancels, and clearing the field deletes the equation. Two
-equations separated by a single space merge into one when you delete the space,
-since `$a$$b$` isn't valid markdown for two.
+commits, Escape cancels, clicking anywhere else puts it away, and clearing the
+field deletes the equation. Two equations separated by a single space merge into
+one when you delete the space, since `$a$$b$` isn't valid markdown for two.
+
+A `$$ … $$` block is a displayed equation and looks like one: you see the
+equation, with its LaTeX one click away behind the toggle in the corner. One you
+have just typed `$$` for opens on its source instead — there is nothing to show
+yet — and stays that way until you leave it. (In the
+editor's model it is a LaTeX code block, which is why the toggle is the same one
+code blocks use.) Copying an equation copies `$x^2$` — the LaTeX, not the
+rendering — so it pastes as an equation here and as source anywhere else.
+
+**Getting out of a blockquote.** ⌫ at the start of a quote's first line takes
+that line back out of the quote — one level at a time, so a nested quote
+unwraps twice — which is how you get rid of the `>`. It works the same whether
+the quote holds a paragraph or a code block.
+
+A code block at the edge of a quote used to be a dead end forwards too: ↓ at the
+end of the code now carries on inside the quote rather than dropping out below
+it (⌘↵ does the same from anywhere in the block).
+
+**Blank lines.** An empty line you leave behind is an empty line: it folds away
+on save the way markdown does everywhere, rather than being written out as a
+literal `<br />`. A break inside a paragraph is a hard break (⇧↵), which is kept.
+
+**Zoom.** ⌘+ and ⌘− change the window you are in, not every window: two files
+open side by side can be at different sizes. A size you set is remembered
+against that file and comes back when you reopen it; ⌘0 forgets it and returns
+the window to the size in Settings, which is what a file you have never zoomed
+follows.
 
 Superscript also answers to ⌃⌘= if you'd rather not reach for Shift.
 
@@ -214,6 +262,8 @@ markwise/
 ├── src/imageblock.js  # Keeps image alt text out of Milkdown's ratio field
 ├── src/imageresize.js # Corner-drag image resizing, saved as <img … width="N">
 ├── src/htmlspan.js    # <span style=…>/<u>/<mark> as marks, round-tripped as HTML
+├── src/blocks.js      # Caret into/out of a quoted code block; empty paragraphs
+├── bin/markwise       # CLI shim; `markwise --wait` is what $EDITOR wants
 ├── src/codeblock.js   # Code-block theme and language list
 ├── src/qlpreview.js   # Quick Look renderer: markdown -> HTML (runs in JavaScriptCore)
 ├── src/qlpreview.css  # Quick Look stylesheet (Markwise palette + KaTeX)

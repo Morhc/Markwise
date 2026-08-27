@@ -110,13 +110,6 @@ export const htmlSpanStringifyHandlers = Object.fromEntries(
 
 // --- schema -----------------------------------------------------------------
 
-/// The attributes of a DOM element, back as the source string they came from.
-function rawAttrs(dom) {
-  return [...(dom.attributes ?? [])]
-    .map((a) => `${a.name}="${a.value.replace(/"/g, '&quot;')}"`)
-    .join(' ')
-}
-
 /// The stored attribute string, back as something toDOM can apply. Parsing it
 /// as HTML rather than splitting on `=` is what makes entities and quoting
 /// work out the same way a browser would read them.
@@ -131,15 +124,22 @@ function domAttrs(tag, raw) {
 function markFor(tag) {
   return $markSchema(nodeType(tag), () => ({
     attrs: { attrs: { default: '' } },
+    // parseDOM only ever sees pasted HTML — the markdown path comes in through
+    // parseMarkdown below — so it is deliberately stricter than the tags this
+    // module writes. A `<span>` has to carry a `style` to mean anything here,
+    // and only the `style` survives: web pages (and KaTeX's own rendering) are
+    // full of `class`-tagged spans whose classes mean nothing once the page's
+    // stylesheet is gone, and turning those into marks litters the saved
+    // markdown with `<span class="katex-mathml">` and friends.
     parseDOM: [
       {
         tag,
         getAttrs: (dom) => {
-          const attrs = rawAttrs(dom)
-          // A bare `<span>` says nothing; matching it would wrap pasted text
-          // in tags that mean nothing when it is saved.
-          if (tag === 'span' && !attrs) return false
-          return { attrs }
+          if (dom.closest?.('.katex')) return false
+          if (tag !== 'span') return { attrs: '' }
+          const style = dom.getAttribute('style')?.trim()
+          if (!style) return false
+          return { attrs: `style="${style.replace(/"/g, '&quot;')}"` }
         },
       },
     ],

@@ -9,14 +9,16 @@ import { linkSchema } from '@milkdown/kit/preset/commonmark'
 import { editorViewCtx, remarkStringifyOptionsCtx, parserCtx, serializerCtx } from '@milkdown/kit/core'
 import { uploadConfig } from '@milkdown/kit/plugin/upload'
 import { blockConfig } from '@milkdown/kit/plugin/block'
+import { codeBlockConfig } from '@milkdown/kit/component/code-block'
 import { toggleMark } from '@milkdown/kit/prose/commands'
 import { TextSelection } from '@milkdown/kit/prose/state'
-import { codeMirrorTheme, codeLanguages } from './codeblock.js'
+import { codeMirrorTheme, codeLanguages, renderCodePreview } from './codeblock.js'
 import { mathPlugins, mathInputGuard, MATH_INLINE } from './latex.js'
 import { supSubPlugins, supSubStringifyHandlers } from './supsub.js'
 import { htmlSpanPlugins, htmlSpanStringifyHandlers } from './htmlspan.js'
 import { patchImageBlock } from './imageblock.js'
 import { imageResizePlugins } from './imageresize.js'
+import { blockPlugins, paragraphStringifyHandlers, paragraphJoin } from './blocks.js'
 
 // Read a File as a self-contained data: URL so dropped/pasted images persist in
 // the saved markdown (Crepe's default uploader uses ephemeral blob: URLs).
@@ -243,6 +245,10 @@ async function openNow(markdown, baseHref) {
       [Crepe.Feature.CodeMirror]: {
         theme: codeMirrorTheme,
         languages: codeLanguages,
+        // `$$ … $$` block equations are LaTeX code blocks (see codeblock.js).
+        // `previewOnlyByDefault` is set below rather than here — it has to be
+        // decided per block, and Crepe reads this object once.
+        renderPreview: renderCodePreview,
       },
       // Flash a "Copied!" confirmation when the link tooltip's copy button is used.
       [Crepe.Feature.LinkTooltip]: {
@@ -257,6 +263,10 @@ async function openNow(markdown, baseHref) {
   })
   crepe.editor.use(linkInputRule)
   crepe.editor.use(taskListInputRule)
+  // Getting the caret into and out of a code block that sits at the edge of a
+  // blockquote, and empty paragraphs that stay empty rather than becoming
+  // `<br />` (see src/blocks.js).
+  crepe.editor.use(blockPlugins)
   // Inline-equation editing, adjacent-equation merging, and keeping money out
   // of equations (see src/latex.js).
   mathPlugins({ isLoading: () => loading }).forEach((p) => crepe.editor.use(p))
@@ -272,7 +282,9 @@ async function openNow(markdown, baseHref) {
         ...(prev?.handlers ?? {}),
         ...supSubStringifyHandlers,
         ...htmlSpanStringifyHandlers,
+        ...paragraphStringifyHandlers,
       },
+      join: [...(prev?.join ?? []), ...paragraphJoin],
     }))
   })
   // Typing `![alt](src)` doesn't create an image by default (commonmark ships an
@@ -289,6 +301,26 @@ async function openNow(markdown, baseHref) {
   // Corner-drag image resizing, persisted as `<img … width="N">` (see
   // src/imageresize.js).
   crepe.editor.use(imageResizePlugins)
+  // Whether a block equation opens rendered or open for editing depends on
+  // where it came from: one already in the document should show the equation,
+  // while one you just typed `$$` for is empty and needs its editor — hiding
+  // that behind an empty preview leaves a blank box you can't type into.
+  //
+  // The code-block component reads `previewOnlyByDefault` once per block, as it
+  // mounts, so a getter answers per block: blocks mount during a load, and
+  // anything you create afterwards mounts when the document is idle. Crepe
+  // copies its own config object wholesale, which drops getters, so this has to
+  // be installed after Crepe's own configuration rather than passed through it.
+  crepe.editor.config((ctx) => {
+    ctx.update(codeBlockConfig.key, (prev) => {
+      const next = { ...prev }
+      Object.defineProperty(next, 'previewOnlyByDefault', {
+        enumerable: true,
+        get: () => loading,
+      })
+      return next
+    })
+  })
   crepe.editor.config((ctx) => {
     ctx.update(blockConfig.key, (prev) => ({
       ...prev,

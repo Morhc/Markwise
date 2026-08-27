@@ -75,6 +75,22 @@ if [ "$count" != "1" ]; then
 fi
 echo "    OK: exactly one registration."
 
+echo "==> Installing the markwise command (for \$EDITOR)"
+# `open -W -a Markwise` waits for the whole app to quit, so an editor session
+# hangs while any other window is open. `markwise --wait` waits for the one
+# document instead. Installed where the user's own tools go, not /usr/local,
+# so no sudo is needed.
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR"
+cp bin/markwise "$BIN_DIR/markwise"
+chmod +x "$BIN_DIR/markwise"
+echo "    $BIN_DIR/markwise"
+case ":$PATH:" in
+    *":$BIN_DIR:"*) echo "    set it as your editor with:  export EDITOR=\"markwise --wait\"" ;;
+    *) echo "    NOTE: $BIN_DIR is not on your PATH; add it, then"
+       echo "          export EDITOR=\"markwise --wait\"" ;;
+esac
+
 echo "==> Activating the Quick Look preview extension"
 # Copying the app registers the extension with PluginKit; electing it makes
 # Quick Look actually use it, and the reset clears any cached plain-text

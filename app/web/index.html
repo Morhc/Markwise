@@ -308,9 +308,42 @@
       vertical-align: baseline;
       -webkit-user-drag: none;
     }
+    /* KaTeX sets its own 1.21em, so an equation always came out a fifth larger
+       than the words around it — conspicuous in running prose, where most of
+       these are a symbol or an isotope mass number rather than real display
+       maths. Match the surrounding text instead; everything KaTeX sizes
+       internally is in em, so the whole rendering scales with it, including
+       under Settings ▸ Text size and the PDF export's Scale. */
+    .milkdown .katex { font-size: 1em; }
+
     /* Crepe's own equation tooltip is broken upstream (it renders a confirm
        button next to an empty box); src/latex.js supplies a working one. */
     .milkdown-latex-inline-edit { display: none !important; }
+
+    /* A `$$ … $$` equation is a LaTeX code block (Crepe's model) showing the
+       preview src/codeblock.js renders for it. In that state it is a displayed
+       equation, not a code listing, and shouldn't look or measure like one:
+       drop the panel background and the code padding, and let the toolbar —
+       which Crepe already keeps invisible until you hover the block — float in
+       the corner instead of reserving a row of its own. Clicking the toggle
+       still brings the source back, and the full code-block chrome with it.
+       The language picker goes: while the equation is rendered there is
+       nothing to pick, and it reappears with the source. */
+    .milkdown .milkdown-code-block:has(> .codemirror-host.hidden) {
+      background: transparent;
+      padding: 0;
+      margin: 8px 0;
+    }
+    .milkdown .milkdown-code-block:has(> .codemirror-host.hidden) > .tools {
+      position: absolute;
+      top: 0;
+      right: 0;
+      z-index: 2;
+    }
+    .milkdown .milkdown-code-block:has(> .codemirror-host.hidden) .language-picker {
+      display: none;
+    }
+    .milkdown .milkdown-code-block .preview-panel .preview { overflow-x: auto; }
 
     .mw-math-edit {
       position: fixed;

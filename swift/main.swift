@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import WebKit
 import UniformTypeIdentifiers
 import Vision
@@ -134,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        clearStaleOpenMarkers()
         // WebKit reads its continuous-spell-check state from this default, but
         // only from the persistent domain — a `register(defaults:)` fallback is
         // ignored. Seed it just once, so spell checking is on out of the box and
@@ -249,6 +251,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         documents.removeAll { $0 === doc }
     }
 
+    // MARK: Open-document markers (what `markwise --wait` waits on)
+
+    /// `$EDITOR` has to block until the file has been edited, and `open -W`
+    /// can only wait for the whole application to quit — so a second window
+    /// left open anywhere keeps `git commit`, or Claude Code's ⌃G, hanging.
+    /// Markwise notes each open document as an empty file named for its path,
+    /// and deletes it when that window closes; `bin/markwise --wait` polls for
+    /// that one file and returns the moment its window goes.
+    static let openMarkerDir = FileManager.default
+        .homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Markwise/open", isDirectory: true)
+
+    /// Named by the hash of the resolved path rather than the path itself:
+    /// a file name has a length limit and can't hold a `/`, and both sides
+    /// can compute this one (`shasum -a 256` in the shim).
+    static func openMarker(for url: URL) -> URL {
+        let digest = SHA256.hash(data: Data(canonicalPath(url).utf8))
+        let name = digest.map { String(format: "%02x", $0) }.joined()
+        return openMarkerDir.appendingPathComponent(name)
+    }
+
+    /// Nothing is open at launch, so anything left here is from a crash — and
+    /// a stale marker is worse than none, since `markwise --wait` would block
+    /// on a window that no longer exists.
+    func clearStaleOpenMarkers() {
+        let fm = FileManager.default
+        let stale = (try? fm.contentsOfDirectory(at: AppDelegate.openMarkerDir,
+                                                 includingPropertiesForKeys: nil)) ?? []
+        for url in stale { try? fm.removeItem(at: url) }
+    }
+
+    func markDocumentOpen(_ url: URL) {
+        try? FileManager.default.createDirectory(at: AppDelegate.openMarkerDir,
+                                                 withIntermediateDirectories: true)
+        try? Data().write(to: AppDelegate.openMarker(for: url))
+    }
+
+    /// Only once no window is showing the file any more — the same document
+    /// can be open in two windows.
+    func markDocumentClosed(_ url: URL, excluding doc: DocumentWindow?) {
+        let target = AppDelegate.canonicalPath(url)
+        let stillOpen = documents.contains { other in
+            other !== doc && other.currentURL.map(AppDelegate.canonicalPath) == target
+        }
+        if !stillOpen { try? FileManager.default.removeItem(at: AppDelegate.openMarker(for: url)) }
+    }
+
     // MARK: Menu actions (app-level create new windows)
 
     @objc func newDocument(_ sender: Any?) {
@@ -356,25 +405,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Text size
 
     static let textScaleKey = "MWTextScale"
+    static let fileScalesKey = "MWFileTextScale"
 
-    /// Percentage the editor's text is scaled by. Editor only — the PDF export
-    /// carries its own scale, so a comfortable reading size doesn't decide what
-    /// a document looks like on paper.
+    static func clampScale(_ percent: Int) -> Int { min(300, max(50, percent)) }
+
+    /// The reading size a document starts at, from Settings. Editor only — the
+    /// PDF export carries its own scale, so a comfortable reading size doesn't
+    /// decide what a document looks like on paper.
     var textScale: Int {
         let stored = UserDefaults.standard.integer(forKey: AppDelegate.textScaleKey)
-        return stored == 0 ? 100 : min(300, max(50, stored))
+        return stored == 0 ? 100 : AppDelegate.clampScale(stored)
     }
 
+    /// Zoom is per document, not per app: a dense table and a page of prose
+    /// wanted different sizes, and having one window's ⌘+ resize every other
+    /// open window was the thing to fix. A size set on a file is remembered
+    /// against its path, so reopening it picks up where you left off; a file
+    /// you have never zoomed follows Settings, and still tracks it when the
+    /// Settings slider moves.
+    var fileScales: [String: Int] {
+        UserDefaults.standard.dictionary(forKey: AppDelegate.fileScalesKey) as? [String: Int] ?? [:]
+    }
+
+    /// One spelling of a file's path, so the same document is recognised
+    /// however it was reached. `/tmp` and `/var` are symlinks into `/private`,
+    /// and a file opened through each looks like two files without this.
+    static func canonicalPath(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    func storedScale(for url: URL?) -> Int? {
+        guard let url else { return nil }
+        return fileScales[AppDelegate.canonicalPath(url)].map(AppDelegate.clampScale)
+    }
+
+    func rememberScale(_ percent: Int?, for url: URL?) {
+        guard let url else { return }
+        var scales = fileScales
+        // Cap the list: this is a convenience, not a document format, and an
+        // unbounded map of every file ever opened has no business in a plist.
+        if scales.count > 400 { scales.removeAll() }
+        scales[AppDelegate.canonicalPath(url)] = percent
+        UserDefaults.standard.set(scales, forKey: AppDelegate.fileScalesKey)
+    }
+
+    /// Settings ▸ Text size: the default, and a live change for every document
+    /// that hasn't been zoomed on its own.
     func setTextScale(_ percent: Int) {
-        let value = min(300, max(50, percent))
+        let value = AppDelegate.clampScale(percent)
         UserDefaults.standard.set(value, forKey: AppDelegate.textScaleKey)
-        for doc in documents { doc.applyTextScale(value) }
+        for doc in documents where !doc.hasOwnTextScale { doc.setTextScale(value, remember: false) }
         settingsWindow?.refresh()
     }
 
-    @objc func zoomIn(_ sender: Any?) { setTextScale(textScale + 10) }
-    @objc func zoomOut(_ sender: Any?) { setTextScale(textScale - 10) }
-    @objc func zoomActualSize(_ sender: Any?) { setTextScale(100) }
+    private func zoomActive(_ delta: Int) {
+        guard let doc = activeDocument else { return }
+        doc.setTextScale(doc.textScale + delta, remember: true)
+    }
+
+    @objc func zoomIn(_ sender: Any?) { zoomActive(10) }
+    @objc func zoomOut(_ sender: Any?) { zoomActive(-10) }
+
+    /// Back to the size in Settings, and forget this file's own — the way out
+    /// of a per-file zoom you no longer want.
+    @objc func zoomActualSize(_ sender: Any?) {
+        guard let doc = activeDocument else { return }
+        doc.clearOwnTextScale()
+    }
 
     // MARK: Font
 
@@ -896,6 +993,11 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         loadEditor()
     }
 
+    /// This window's reading size, and whether it is the file's own choice
+    /// rather than the Settings default (see AppDelegate.fileScales).
+    var textScale = 100
+    var hasOwnTextScale = false
+
     // MARK: Build
 
     func buildWindow() {
@@ -985,9 +1087,45 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     }
 
     /// Scale the editor's text. Applied on load too, so a window opened later
-    /// matches the windows already on screen.
+    /// comes up at the size its file was left at.
     func applyTextScale(_ percent: Int) {
         webView.evaluateJavaScript("window.MW.setTextScale(\(percent))", completionHandler: nil)
+    }
+
+    /// This window's reading size. `remember: true` marks it as the file's own
+    /// choice — stored against its path and no longer following Settings.
+    func setTextScale(_ percent: Int, remember: Bool) {
+        textScale = AppDelegate.clampScale(percent)
+        if remember {
+            hasOwnTextScale = true
+            app?.rememberScale(textScale, for: currentURL)
+        }
+        applyTextScale(textScale)
+    }
+
+    /// Drop this file's own size and go back to following Settings.
+    func clearOwnTextScale() {
+        hasOwnTextScale = false
+        app?.rememberScale(nil, for: currentURL)
+        setTextScale(app?.textScale ?? 100, remember: false)
+    }
+
+    /// Pick up the size stored for a file as it is opened (or, for a file with
+    /// none, the Settings default) — unless this window has already been
+    /// zoomed by hand while untitled, which the user meant for what they were
+    /// writing.
+    func adoptTextScale(for url: URL?) {
+        if let stored = app?.storedScale(for: url) {
+            hasOwnTextScale = true
+            textScale = stored
+        } else if !hasOwnTextScale {
+            textScale = app?.textScale ?? 100
+        } else {
+            // Carried over from the untitled document this was: keep the size
+            // and attach it to the file it just became.
+            app?.rememberScale(textScale, for: url)
+        }
+        applyTextScale(textScale)
     }
 
     /// Set the editor's font family ("" restores the default faces).
@@ -1132,7 +1270,9 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         case "ready":
             webReady = true
             applySpellCheckingPreference()
-            if let scale = app?.textScale, scale != 100 { applyTextScale(scale) }
+            textScale = app?.storedScale(for: currentURL) ?? app?.textScale ?? 100
+            hasOwnTextScale = app?.storedScale(for: currentURL) != nil
+            if textScale != 100 { applyTextScale(textScale) }
             if let font = app?.fontFamily, !font.isEmpty { applyFontFamily(font) }
             if let url = pendingURL {
                 pendingURL = nil
@@ -1490,6 +1630,8 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             currentURL = url
             lastKnownModification = modificationDate(of: url)
             lastSyncedText = text
+            adoptTextScale(for: url)
+            app?.markDocumentOpen(url)
             sendToEditor(open: text)
             setDirty(false)
             updateTitle()
@@ -1942,6 +2084,7 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
                 self.setDirty(false)
                 self.webView.evaluateJavaScript("window.MW.markSaved()", completionHandler: nil)
                 self.updateTitle()
+                if self.hasOwnTextScale { self.app?.rememberScale(self.textScale, for: url) }
                 NSDocumentController.shared.noteNewRecentDocumentURL(url)
                 completion?(true)
             } catch {
@@ -1983,6 +2126,7 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
     func windowWillClose(_ notification: Notification) {
         app?.documentDidClose(self)
+        if let url = currentURL { app?.markDocumentClosed(url, excluding: self) }
     }
 
     /// Ask about unsaved changes before closing or quitting. `completion` is

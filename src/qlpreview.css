@@ -119,6 +119,9 @@ img { max-width: 100%; height: auto; }
 /* A figure of its own (the editor's image blocks) sits centred. */
 p:has(> img:only-child) { text-align: center; }
 
+/* Match the editor: KaTeX's own 1.21em would print equations a fifth larger
+   than the words around them. */
+.katex { font-size: 1em; }
 .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
 
 input[type='checkbox'] { margin-right: 6px; }

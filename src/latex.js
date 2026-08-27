@@ -14,7 +14,8 @@
 //     text selection whenever a drag begins on top of an equation.
 import katex from 'katex'
 import { $prose, $remark } from '@milkdown/kit/utils'
-import { editorViewOptionsCtx } from '@milkdown/kit/core'
+import { editorViewOptionsCtx, schemaCtx } from '@milkdown/kit/core'
+import { DOMSerializer } from '@milkdown/kit/prose/model'
 import { Plugin, PluginKey, TextSelection } from '@milkdown/kit/prose/state'
 
 export const MATH_INLINE = 'math_inline'
@@ -158,6 +159,66 @@ export function mathInputGuard(ctx) {
   }))
 }
 
+// --- The clipboard -----------------------------------------------------------
+// An equation's on-screen DOM is a whole KaTeX rendering: a hidden MathML copy
+// (which carries the LaTeX source in an <annotation>) beside a stack of styled
+// spans that draw the glyphs. Handed to the clipboard as-is, that is what gets
+// pasted — the same equation twice over, once as text and once as markup, e.g.
+// `<span class="katex-mathml">26Al^{26}\mathrm{Al}</span><span class="mord
+// mtight">26</span>…`.
+//
+// Two halves fix it. Going out, the clipboard gets its own serializer that
+// renders an equation as one compact span: the marker Markwise parses back,
+// with the LaTeX itself as the text so anything else receiving the paste sees
+// `$^{26}\mathrm{Al}$`. Coming in, a KaTeX rendering from anywhere — an older
+// Markwise copy, a web page — is reduced to that same span before ProseMirror
+// parses it.
+
+/// The LaTeX inside a KaTeX rendering, from the MathML copy KaTeX writes for
+/// screen readers. `null` when this isn't a KaTeX rendering after all.
+function latexOf(katexEl) {
+  const annotation = katexEl.querySelector('annotation[encoding="application/x-tex"]')
+  return annotation?.textContent?.trim() || null
+}
+
+function mathSpan(value) {
+  const span = document.createElement('span')
+  span.dataset.type = MATH_INLINE
+  span.dataset.value = value
+  span.textContent = `$${value}$`
+  return span
+}
+
+/// Everything the clipboard needs, as one ProseMirror plugin: the schema is in
+/// hand here, which `clipboardSerializer` needs and a view option can't reach.
+function clipboardPlugin(ctx) {
+  const schema = ctx.get(schemaCtx)
+  const base = DOMSerializer.fromSchema(schema)
+  const serializer = new DOMSerializer(
+    { ...base.nodes, [MATH_INLINE]: (node) => mathSpan(node.attrs.value ?? '') },
+    base.marks
+  )
+  return new Plugin({
+    key: new PluginKey('MW_mathClipboard'),
+    props: {
+      clipboardSerializer: serializer,
+      transformPastedHTML: (html) => {
+        if (!html.includes('katex')) return html
+        const doc = new DOMParser().parseFromString(html, 'text/html')
+        for (const el of [...doc.querySelectorAll('.katex')]) {
+          // A rendering Markwise itself copied is already inside the marker
+          // span; replacing the wrapper takes the KaTeX markup with it.
+          const target = el.closest(`[data-type="${MATH_INLINE}"]`) ?? el
+          const value = latexOf(el) ?? target.getAttribute('data-value')
+          if (!value) continue
+          target.replaceWith(mathSpan(value))
+        }
+        return doc.body.innerHTML
+      },
+    },
+  })
+}
+
 // --- Merge adjacent equations ----------------------------------------------
 // Runs as a normalization step rather than a Backspace keybinding so it applies
 // however the equations ended up side by side (delete, paste, drag, undo) and
@@ -230,6 +291,20 @@ class MathInlineEditor {
     // Keep clicks inside the popup from reaching the document (which would
     // move the selection and close us mid-edit).
     this.dom.addEventListener('mousedown', (e) => e.stopPropagation(), true)
+
+    // Anything pressed outside the popup dismisses it. The field's own `blur`
+    // is not enough on its own: a press only moves focus when it lands on
+    // something focusable, and plenty of the editor isn't — the padding beside
+    // a blockquote's bar, the margins around the text column. Pressing there
+    // used to leave the popup open and holding focus, so the next thing typed
+    // went into the LaTeX field instead of the document, and the equation
+    // looked like it had captured the whole block. Capture phase, because
+    // Crepe's own handlers stop plenty of events on the way up.
+    this.onPointerDown = (e) => {
+      if (this.pos == null || this.dom.contains(e.target)) return
+      this.commit()
+    }
+    document.addEventListener('pointerdown', this.onPointerDown, true)
   }
 
   open(pos, node) {
@@ -314,6 +389,7 @@ class MathInlineEditor {
   }
 
   destroy() {
+    document.removeEventListener('pointerdown', this.onPointerDown, true)
     this.dom.remove()
   }
 }
@@ -368,5 +444,5 @@ export function mathPlugins({ isLoading }) {
       })
   )
 
-  return [remarkLiteralDollars, escapes, merge, edit]
+  return [remarkLiteralDollars, $prose(clipboardPlugin), escapes, merge, edit]
 }
