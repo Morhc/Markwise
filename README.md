@@ -20,7 +20,7 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
 - **Auto-linking** — type `[text](url)` and it converts to a real (blue) link;
   double-click or ⌘-click a link to open it in your browser.
 - **Math** — `$E = mc^2$` renders with KaTeX, at the size of the text around it.
-  Click an equation to edit its LaTeX with a live preview; delete the space
+  Double-click an equation to edit its LaTeX with a live preview; delete the space
   between two equations to merge them. A `$$ … $$` block shows the rendered
   equation, not its source. Write `\$` for a dollar that isn't maths.
 - **Superscript & subscript** — ⌃⌘+ and ⌃⌘−, written out as the `<sup>`/`<sub>`
@@ -145,11 +145,18 @@ Or in Finder: right-click any `.md` → **Get Info** → **Open with: Markwise**
 
 Open a file, edit it inline, press ⌘S. That's it.
 
-**Working with equations.** Type `$x^2$` to create one. Click a rendered
-equation to reopen its LaTeX in a small field with a live preview — Enter
-commits, Escape cancels, clicking anywhere else puts it away, and clearing the
-field deletes the equation. Two equations separated by a single space merge into
+**Working with equations.** Type `$x^2$` to create one. A single click selects
+an equation; *double*-click one to reopen its LaTeX in a small field with a live
+preview — Enter commits, Escape cancels, clicking anywhere else puts it away,
+and clearing the field deletes the equation. (Single click used to open the
+field, which meant clicking anywhere near an equation handed the keyboard to
+that little box and the arrow keys quietly stopped moving the caret.) Two equations separated by a single space merge into
 one when you delete the space, since `$a$$b$` isn't valid markdown for two.
+
+One thing to know: selecting an equation with ⇧← or ⇧→ highlights the word
+before it as well. What gets copied is right — only the highlight overreaches.
+It's a WebKit painting quirk with no reachable fix; clicking or dragging is
+exact.
 
 A `$$ … $$` block is a displayed equation and looks like one: you see the
 equation, with its LaTeX one click away behind the toggle in the corner. One you

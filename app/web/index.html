@@ -307,7 +307,20 @@
       padding: 0;
       vertical-align: baseline;
       -webkit-user-drag: none;
+      /* Crepe lays an equation out as `inline-block`, and WebKit paints a
+         selection bounded by an inline-block wrong: selecting the equation
+         alone was painted starting a character or so to its left, so the
+         highlight claimed a letter it wasn't going to copy. As an ordinary
+         inline box it paints exactly what is selected. KaTeX's own spans
+         handle the internal layout, so nothing about the rendering changes. */
+      display: inline;
     }
+    /* KaTeX renders every equation twice: the glyphs you see, and a MathML
+       copy for screen readers, hidden in a clipped 1px box. The copy is still
+       laid out, and WebKit's selection painting reaches into it — selecting
+       just the equation gets painted from the start of whatever text precedes
+       it. Take it out of the layout. */
+    .milkdown .editor span[data-type='math_inline'] .katex-mathml { display: none; }
     /* KaTeX sets its own 1.21em, so an equation always came out a fifth larger
        than the words around it — conspicuous in running prose, where most of
        these are a symbol or an isotope mass number rather than real display
@@ -315,6 +328,20 @@
        internally is in em, so the whole rendering scales with it, including
        under Settings ▸ Text size and the PDF export's Scale. */
     .milkdown .katex { font-size: 1em; }
+
+    /* A clicked equation is selected as one node (src/latex.js). Show that the
+       way selected text is shown, so "this is what ⌘C will give you" reads the
+       same for an equation as for anything else. Literal colours, matching
+       `::selection` above — WebKit doesn't resolve custom properties there and
+       these two have to agree. */
+    .milkdown .editor span[data-type='math_inline'].ProseMirror-selectednode {
+      background: #d5d5d5;
+    }
+    @media (prefers-color-scheme: dark) {
+      .milkdown .editor span[data-type='math_inline'].ProseMirror-selectednode {
+        background: #35659f;
+      }
+    }
 
     /* Crepe's own equation tooltip is broken upstream (it renders a confirm
        button next to an empty box); src/latex.js supplies a working one. */

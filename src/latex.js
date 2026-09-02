@@ -219,6 +219,63 @@ function clipboardPlugin(ctx) {
   })
 }
 
+// --- Where a selection touching an equation starts ---------------------------
+// ProseMirror expresses the document position immediately before an inline
+// atom as a point *inside the text node before it* — `(text "A ", 2)`, the end
+// of that node. That is a correct description of the place, and WebKit paints
+// it wrong: a selection starting there is painted from the *start* of that
+// text node, so selecting the equation in `A $^{26}\mathrm{Al}$ B` washes "A "
+// as well. Measured: the text node occupies 635.0–649.2 and the equation
+// 649.2–677.7, and the paint ran 635.0–677.0.
+//
+// The same place has another spelling — `(paragraph, indexOfTheEquation)` —
+// which WebKit paints correctly. So after ProseMirror has written the
+// selection to the DOM, the start is rewritten to that form. Nothing about
+// the selection changes, only how its beginning is addressed.
+//
+// KNOWN UNFIXED: this rewrite works for a selection made by clicking, and not
+// for one made with ⇧← / ⇧→ landing exactly on an equation — that still paints
+// the preceding word, though the model and the clipboard are both right. The
+// two cases end with byte-identical DOM ranges (`anchor P@1, focus P@2`,
+// logged from a real keypress), so WebKit is simply not repainting the region
+// for the keyboard one. Tried and measured, none of it moved the paint:
+// re-spelling the range, forcing repaints synchronously and across a frame,
+// every `user-select` variant, taking KaTeX's hidden MathML out of layout, and
+// dispatching the selection ahead of ProseMirror. Converting the range to a
+// NodeSelection *does* paint correctly and breaks ⌘C entirely — don't.
+function selectionStartAtAtom() {
+  return new Plugin({
+    key: new PluginKey('MW_atomSelectionStart'),
+    view: (view) => ({
+      update() {
+        const { from, empty } = view.state.selection
+        if (empty) return
+        const node = view.state.doc.nodeAt(from)
+        if (!node?.isAtom || !node.isInline || node.isText) return
+
+        const dom = view.nodeDOM(from)
+        const parent = dom?.parentNode
+        if (!parent) return
+        const index = Array.prototype.indexOf.call(parent.childNodes, dom)
+        if (index < 0) return
+
+        const sel = window.getSelection()
+        if (!sel?.rangeCount) return
+        const current = sel.getRangeAt(0)
+        if (current.startContainer === parent && current.startOffset === index) return
+
+        try {
+          const range = document.createRange()
+          range.setStart(parent, index)
+          range.setEnd(current.endContainer, current.endOffset)
+          sel.removeAllRanges()
+          sel.addRange(range)
+        } catch (e) { /* leave the selection alone rather than break it */ }
+      },
+    }),
+  })
+}
+
 // --- Merge adjacent equations ----------------------------------------------
 // Runs as a normalization step rather than a Backspace keybinding so it applies
 // however the equations ended up side by side (delete, paste, drag, undo) and
@@ -419,9 +476,27 @@ export function mathPlugins({ isLoading }) {
           return editor
         },
         props: {
-          // Only a pointer click opens the field. Selecting an equation by
-          // arrowing over it shouldn't yank focus out of the document.
+          // A click *selects* the equation, whole, the way clicking a word
+          // selects a word. That is the thing a drag cannot do: the pointer
+          // has to clear a `contenteditable="false"` element before the
+          // browser will move the selection past it, so dragging always takes
+          // a space along with the equation and there is no gesture that gets
+          // just the equation.
+          //
+          // Editing is a double click, as it is for an image here. A single
+          // click opening the field meant clicking anywhere near an equation
+          // handed the keyboard to that little text box, and the arrow keys
+          // then quietly stopped moving the caret.
           handleClickOn: (view, _pos, node, nodePos) => {
+            if (node.type.name !== MATH_INLINE) return false
+            view.dispatch(
+              view.state.tr.setSelection(
+                TextSelection.create(view.state.doc, nodePos, nodePos + node.nodeSize)
+              )
+            )
+            return true
+          },
+          handleDoubleClickOn: (view, _pos, node, nodePos) => {
             if (node.type.name !== MATH_INLINE || !editor) return false
             editor.open(nodePos, node)
             return true
@@ -444,5 +519,6 @@ export function mathPlugins({ isLoading }) {
       })
   )
 
-  return [remarkLiteralDollars, $prose(clipboardPlugin), escapes, merge, edit]
+  return [remarkLiteralDollars, $prose(clipboardPlugin), $prose(selectionStartAtAtom),
+          escapes, merge, edit]
 }
