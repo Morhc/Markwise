@@ -29,7 +29,10 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
   as what they describe instead of as visible tags, and save back as they were
   written.
 - **See the raw markdown** — ⌘/ swaps the rendered view for an editable source
-  view; edits made there flow back into the document.
+  view, showing the part of the file you were looking at rather than the top of
+  it — whether or not the caret is anywhere near. Edits made there flow back
+  into the document, and toggling back leaves you where you were reading, with
+  the caret where you left it.
 - **Relative image paths** — `![](images/pic.png)` resolves against the file's own
   folder, and stays relative when saved.
 - **Pasted images land on disk** — paste or drop a picture (including one copied

@@ -19,6 +19,9 @@ import { htmlSpanPlugins, htmlSpanStringifyHandlers } from './htmlspan.js'
 import { patchImageBlock } from './imageblock.js'
 import { imageResizePlugins } from './imageresize.js'
 import { blockPlugins, paragraphStringifyHandlers, paragraphJoin } from './blocks.js'
+import {
+  sourceOffset, selectionForOffset, lineTable, scrollForOffset, offsetAtScroll,
+} from './sourcesync.js'
 
 // Read a File as a self-contained data: URL so dropped/pasted images persist in
 // the saved markdown (Crepe's default uploader uses ephemeral blob: URLs).
@@ -716,6 +719,10 @@ let sourceVisible = false
 let sourceEl = null
 // The markdown as it stood when source view opened, to spot real edits.
 let sourceOpenText = ''
+// Where the caret was put, and where the text was scrolled to, when source
+// view opened — so a real move can be told from an untouched view.
+let sourceCaretAt = 0
+let sourceScrollAt = 0
 
 function ensureSourceEl() {
   if (sourceEl) return sourceEl
@@ -734,29 +741,122 @@ async function setSource(visible) {
 
   if (visible) {
     sourceOpenText = getMarkdown()
+    // Both anchors have to be read before the class change below, which takes
+    // the rendered view off screen — a hidden view can't be asked what is at
+    // the top of it.
+    const top = offsetInMarkdown(sourceOpenText, topOfRenderedView())
+    sourceCaretAt = offsetInMarkdown(sourceOpenText, null)
     el.value = sourceOpenText
     sourceVisible = true
     document.body.classList.add('source-open')
     hideBlockHandle()
-    el.focus()
-    el.setSelectionRange(0, 0)
+    showSourceAt(el, top, sourceCaretAt)
     return sourceVisible
   }
 
   const text = el.value
+  // Both anchors have to be read while the textarea is still on screen: a
+  // hidden element has no width, so nothing about its lines can be measured.
+  const caret = el.selectionStart ?? 0
+  const moved = caret !== sourceCaretAt
+  const scrolled = el.scrollTop !== sourceScrollAt
+  const top = offsetAtScroll(lineTable(el), el.scrollTop)
+
   sourceVisible = false
   document.body.classList.remove('source-open')
+  let rebuilt = false
   if (text !== sourceOpenText) {
     // Rebuild the rendered document from the edited source, keeping the
     // unsaved-changes state that the edit implies.
     const dirty = text !== baseline
     await open(text)
+    rebuilt = true
     if (dirty) post({ type: 'dirty' })
   } else {
     try { view && view.focus() } catch (e) { /* noop */ }
   }
+  // The caret only moves if you moved it — or if the rebuild has just thrown
+  // the old one away, in which case the source caret is all that is left of it.
+  if (moved || rebuilt) caretFromSource(text, caret)
+  // An untouched source view leaves the rendered one exactly as it was: WebKit
+  // restores the scroll position of a block it un-hides, and that is a closer
+  // match than re-deriving it, which can only align to the top of a block.
+  if (scrolled || rebuilt) showRenderedAt(text, top)
   return sourceVisible
 }
+
+/// Show the source with the rendered view's top line at the top, and the
+/// caret where the rendered view's caret was.
+///
+/// The order is the whole trick. Focusing a textarea reveals its selection —
+/// asynchronously, so a scroll position set in the same breath is overwritten
+/// a frame later — but only when the selection is out of sight. Scrolling
+/// first and selecting the line that is now on screen gives the reveal nothing
+/// to do; the real caret goes in afterwards, where setting a selection by hand
+/// moves nothing.
+function showSourceAt(el, top, caret) {
+  el.scrollTop = scrollForOffset(lineTable(el), top)
+  sourceScrollAt = el.scrollTop
+  el.setSelectionRange(top, top)
+  el.focus()
+  el.setSelectionRange(caret, caret)
+}
+
+/// Scroll the rendered view to the block the source view was showing at its
+/// top. Aligning the block rather than revealing it is what makes the two
+/// views land in the same place rather than merely near it.
+function showRenderedAt(text, offset) {
+  const scroller = document.getElementById('app')
+  if (!crepe || !view || !scroller) return
+  try {
+    const parse = crepe.editor.action((ctx) => ctx.get(parserCtx))
+    const at = selectionForOffset(view.state.doc, parse, text, offset).from
+    const coords = view.coordsAtPos(at)
+    scroller.scrollTop += coords.top - scroller.getBoundingClientRect().top
+  } catch (e) { /* leave the view where it is */ }
+}
+
+/// The document position showing at the top of the rendered view, or null —
+/// meaning the view can't say (an empty document, a point over no text), and
+/// the caret is the best anchor left.
+function topOfRenderedView() {
+  const scroller = document.getElementById('app')
+  const editor = editorEl()
+  if (!scroller || !editor || !view) return null
+  const rect = editor.getBoundingClientRect()
+  const found = view.posAtCoords({
+    left: rect.left + 8,
+    top: scroller.getBoundingClientRect().top + 4,
+  })
+  return found ? found.pos : null
+}
+
+/// Where in the markdown a position in the rendered document is (the caret,
+/// when `pos` is null). Anything unexpected here is answered with the top of
+/// the document, which is where source view opened before this existed.
+function offsetInMarkdown(markdown, pos) {
+  if (!crepe || !view) return 0
+  try {
+    const serialize = crepe.editor.action((ctx) => ctx.get(serializerCtx))
+    return sourceOffset(view, markdown, serialize, pos)
+  } catch (e) {
+    return 0
+  }
+}
+
+/// Put the editor's caret where the source view's caret was left.
+function caretFromSource(text, caret) {
+  if (!crepe || !view) return
+  try {
+    const parse = crepe.editor.action((ctx) => ctx.get(parserCtx))
+    const selection = selectionForOffset(view.state.doc, parse, text, caret)
+    // No `scrollIntoView`: the top line is what decides where the view sits,
+    // and revealing the caret as well would fight it.
+    view.dispatch(view.state.tr.setSelection(selection))
+    view.focus()
+  } catch (e) { /* leave the caret where the rebuild put it */ }
+}
+
 
 // --- Inline formatting ------------------------------------------------------
 // Toggle a mark by name over the selection (the native Format menu drives this
