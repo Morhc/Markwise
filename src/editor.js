@@ -19,6 +19,9 @@ import { htmlSpanPlugins, htmlSpanStringifyHandlers } from './htmlspan.js'
 import { patchImageBlock } from './imageblock.js'
 import { imageResizePlugins } from './imageresize.js'
 import { blockPlugins, paragraphStringifyHandlers, paragraphJoin } from './blocks.js'
+import {
+  replaceSelection, replaceAll, replaceSelectionInTextarea, replaceAllInTextarea,
+} from './replace.js'
 import { foldPlugin, foldAtCaret, unfoldAtCaret, unfoldAll, revealPos, revealText } from './fold.js'
 import {
   sourceOffset, selectionForOffset, lineTable, scrollForOffset, offsetAtScroll,
@@ -1026,11 +1029,28 @@ function revealFind(query) {
   return revealText(view, query)
 }
 
+// --- Replace (see src/replace.js) ------------------------------------------
+/// The Replace button: replace the selection if it is a match. The host finds
+/// the next match either way.
+function replace(query, replacement) {
+  if (sourceVisible) return sourceEl ? replaceSelectionInTextarea(sourceEl, query, replacement ?? '') : false
+  return view ? replaceSelection(view, query, replacement ?? '') : false
+}
+
+/// The All button. Sections folded over a match are unfolded first, so what
+/// changed is there to be seen. Returns how many were replaced.
+function replaceEverywhere(query, replacement) {
+  if (sourceVisible) return sourceEl ? replaceAllInTextarea(sourceEl, query, replacement ?? '') : 0
+  if (!view) return 0
+  revealText(view, query)
+  return replaceAll(view, query, replacement ?? '')
+}
+
 window.MW = {
   open, getMarkdown, markSaved, setOutline, toggleOutline, setImageSrc, insertImages,
   toggleMark: toggleTextMark,
   setSource, setBaseURL, primeSpellCheck, nativeReply, mergeInputs, setTextScale,
-  setFontFamily, fold, revealFind,
+  setFontFamily, fold, revealFind, replace, replaceAll: replaceEverywhere,
   preparePdfExport, finishPdfExport,
   // Test hook: lets the offscreen-WKWebView harness drive the document model
   // directly. Not used by the app itself.

@@ -325,6 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func reloadFromDisk(_ sender: Any?) { activeDocument?.reloadFromDisk() }
     @objc func showInFinder(_ sender: Any?) { activeDocument?.showInFinder() }
     @objc func performFind(_ sender: Any?) { activeDocument?.showSearch() }
+    @objc func performFindAndReplace(_ sender: Any?) { activeDocument?.showReplace() }
     @objc func findNext(_ sender: Any?) { activeDocument?.findNext() }
     @objc func findPrevious(_ sender: Any?) { activeDocument?.findPrevious() }
     @objc func toggleSuperscript(_ sender: Any?) { activeDocument?.toggleMark("sup") }
@@ -337,7 +338,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)), #selector(exportPDF(_:)),
-             #selector(performFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)):
+             #selector(performFind(_:)), #selector(performFindAndReplace(_:)),
+             #selector(findNext(_:)), #selector(findPrevious(_:)):
             return activeDocument != nil
         case #selector(toggleSuperscript(_:)), #selector(toggleSubscript(_:)),
              #selector(foldSection(_:)), #selector(unfoldSection(_:)), #selector(unfoldAllSections(_:)):
@@ -628,6 +630,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(withTitle: "Find…", action: #selector(performFind(_:)), keyEquivalent: "f")
+        // ⌥⌘F, as in TextEdit, Pages and Xcode — ⌘H is the system's Hide.
+        let findReplace = NSMenuItem(title: "Find and Replace…", action: #selector(performFindAndReplace(_:)), keyEquivalent: "f")
+        findReplace.keyEquivalentModifierMask = [.command, .option]
+        editMenu.addItem(findReplace)
         editMenu.addItem(withTitle: "Find Next", action: #selector(findNext(_:)), keyEquivalent: "g")
         let findPrev = NSMenuItem(title: "Find Previous", action: #selector(findPrevious(_:)), keyEquivalent: "g")
         findPrev.keyEquivalentModifierMask = [.command, .shift]
@@ -965,9 +971,16 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     var window: NSWindow!
     var webView: WKWebView!
 
-    // Floating find-in-page bar.
+    // Floating find-in-page bar, with a Replace row under it (⌥⌘F, or the
+    // disclosure triangle at its left).
     var searchBar: NSView!
     var searchField: NSSearchField!
+    var findRow: NSView!
+    var replaceRow: NSView!
+    var replaceField: NSTextField!
+    var replaceToggle: NSButton!
+    var replaceAllButton: NSButton!
+    var replaceVisible = false
 
     /// Currently open file (nil = untitled).
     var currentURL: URL?
@@ -1179,7 +1192,16 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         bar.autoresizingMask = [.minXMargin, .minYMargin]
         bar.isHidden = true
 
-        searchField = NSSearchField(frame: NSRect(x: 10, y: 8, width: 230, height: 24))
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: barW, height: barH))
+        replaceToggle = NSButton(frame: NSRect(x: 8, y: 12, width: 18, height: 16))
+        replaceToggle.bezelStyle = .disclosure
+        replaceToggle.setButtonType(.pushOnPushOff)
+        replaceToggle.title = ""
+        replaceToggle.target = self
+        replaceToggle.action = #selector(toggleReplaceAction(_:))
+        replaceToggle.toolTip = "Replace (⌥⌘F)"
+
+        searchField = NSSearchField(frame: NSRect(x: 30, y: 8, width: 210, height: 24))
         searchField.placeholderString = "Find"
         searchField.delegate = self
         searchField.sendsSearchStringImmediately = true
@@ -1207,13 +1229,93 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         doneBtn.action = #selector(hideSearch)
         doneBtn.keyEquivalent = "\u{1B}" // Escape
 
-        bar.addSubview(searchField)
-        bar.addSubview(prevBtn)
-        bar.addSubview(nextBtn)
-        bar.addSubview(doneBtn)
+        for control in [replaceToggle!, searchField!, prevBtn, nextBtn, doneBtn] { row.addSubview(control) }
+        bar.addSubview(row)
+        findRow = row
+
+        // The Replace row, under the find row and the same width. Replace
+        // swaps the selected match and finds the next; All does the lot as a
+        // single undoable change.
+        let replaceRow = NSView(frame: NSRect(x: 0, y: 0, width: barW, height: 34))
+        replaceField = NSTextField(frame: NSRect(x: 30, y: 8, width: 176, height: 24))
+        replaceField.placeholderString = "Replace"
+        replaceField.target = self
+        replaceField.action = #selector(replaceAction(_:))
+
+        let replaceBtn = NSButton(frame: NSRect(x: 210, y: 8, width: 78, height: 24))
+        replaceBtn.title = "Replace"
+        replaceBtn.bezelStyle = .rounded
+        replaceBtn.target = self
+        replaceBtn.action = #selector(replaceAction(_:))
+        replaceBtn.toolTip = "Replace the selected match and find the next"
+
+        replaceAllButton = NSButton(frame: NSRect(x: 292, y: 8, width: 78, height: 24))
+        replaceAllButton.title = "All"
+        replaceAllButton.bezelStyle = .rounded
+        replaceAllButton.target = self
+        replaceAllButton.action = #selector(replaceAllAction(_:))
+        replaceAllButton.toolTip = "Replace every match"
+
+        for control in [replaceField!, replaceBtn, replaceAllButton!] { replaceRow.addSubview(control) }
+        searchField.nextKeyView = replaceField
+        replaceField.nextKeyView = searchField
+        replaceRow.isHidden = true
+        bar.addSubview(replaceRow)
+        self.replaceRow = replaceRow
 
         webView.addSubview(bar)
         searchBar = bar
+    }
+
+    /// Grow or shrink the bar for the Replace row, keeping its top edge where
+    /// it is — the bar hangs from the top of the window.
+    func layoutSearchBar() {
+        let rowH = replaceRow.frame.height
+        let height = findRow.frame.height + (replaceVisible ? rowH : 0)
+        var frame = searchBar.frame
+        frame.origin.y = frame.maxY - height
+        frame.size.height = height
+        searchBar.frame = frame
+        findRow.setFrameOrigin(NSPoint(x: 0, y: replaceVisible ? rowH : 0))
+        replaceRow.isHidden = !replaceVisible
+        replaceToggle.state = replaceVisible ? .on : .off
+    }
+
+    @objc func toggleReplaceAction(_ sender: Any?) {
+        replaceVisible = replaceToggle.state == .on
+        layoutSearchBar()
+        window.makeFirstResponder(replaceVisible ? replaceField : searchField)
+    }
+
+    /// ⌥⌘F: the find bar with the Replace row open.
+    func showReplace() {
+        searchBar.isHidden = false
+        replaceVisible = true
+        layoutSearchBar()
+        window.makeFirstResponder(searchField.stringValue.isEmpty ? searchField : replaceField)
+        if !searchField.stringValue.isEmpty { runFind(backwards: false) }
+    }
+
+    @objc func replaceAction(_ sender: Any?) {
+        let query = searchField.stringValue
+        guard !query.isEmpty else { window.makeFirstResponder(searchField); return }
+        let js = "window.MW.replace(\(jsString(query)), \(jsString(replaceField.stringValue)))"
+        webView.evaluateJavaScript(js) { [weak self] _, _ in self?.runFind(backwards: false) }
+    }
+
+    @objc func replaceAllAction(_ sender: Any?) {
+        let query = searchField.stringValue
+        guard !query.isEmpty else { window.makeFirstResponder(searchField); return }
+        let js = "window.MW.replaceAll(\(jsString(query)), \(jsString(replaceField.stringValue)))"
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self else { return }
+            // Say how many, on the button itself, for a moment.
+            let count = (result as? NSNumber)?.intValue ?? 0
+            self.replaceAllButton.title = count == 0 ? "None" : "\(count) replaced"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.replaceAllButton.title = "All"
+            }
+        }
     }
 
     // MARK: Outline
@@ -1242,14 +1344,26 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
     func showSearch() {
         searchBar.isHidden = false
+        if replaceVisible {
+            replaceVisible = false
+            layoutSearchBar()
+        }
         window.makeFirstResponder(searchField)
         if !searchField.stringValue.isEmpty { runFind(backwards: false) }
     }
 
     @objc func hideSearch() {
         searchBar.isHidden = true
-        webView.find("", configuration: WKFindConfiguration()) { _ in }
+        clearFindHighlight()
         window.makeFirstResponder(webView)
+    }
+
+    /// Take WebKit's yellow match highlight off the page. An empty search is
+    /// ignored and leaves it on screen; a search that fails clears it
+    /// (measured: 536 highlight pixels either side of `find("")`, none after a
+    /// miss). So search for something no document contains.
+    func clearFindHighlight() {
+        webView.find("\u{2063}\(UUID().uuidString)", configuration: WKFindConfiguration()) { _ in }
     }
 
     func findNext() {
@@ -1268,7 +1382,11 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
     func runFind(backwards: Bool) {
         let query = searchField.stringValue
-        guard !query.isEmpty else { searchField.placeholderString = "Find"; return }
+        guard !query.isEmpty else {
+            searchField.placeholderString = "Find"
+            clearFindHighlight()
+            return
+        }
         let config = WKFindConfiguration()
         config.caseSensitive = false
         config.wraps = true

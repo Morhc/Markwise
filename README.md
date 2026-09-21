@@ -28,6 +28,11 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
 - **Styled text** — `<span style="color:red">…</span>`, `<u>` and `<mark>` render
   as what they describe instead of as visible tags, and save back as they were
   written.
+- **Find and Replace** — ⌥⌘F, or the triangle at the left of the ⌘F bar,
+  opens a Replace row. Replace swaps the selected match and finds the next
+  (the first press on a new search just finds); All replaces every match as a
+  single change, so one ⌘Z puts them all back. Matching ignores case, the same
+  as Find, and works in code blocks and the source view too.
 - **Fold sections** — hover a heading for a chevron in the margin; click it to
   hide everything down to the next heading of the same level (⌥⌘[ folds the
   section you're in, pressed again it folds the one around it; ⌥⌘] unfolds,
@@ -142,6 +147,7 @@ Or in Finder: right-click any `.md` → **Get Info** → **Open with: Markwise**
 | Settings            | ⌘,       |
 | Close               | ⌘W       |
 | Find                | ⌘F       |
+| Find and replace    | ⌥⌘F      |
 | Markdown source     | ⌘/       |
 | Fold / unfold section | ⌥⌘[ / ⌥⌘] |
 | Unfold all          | ⌥⇧⌘]     |
