@@ -19,6 +19,7 @@ import { htmlSpanPlugins, htmlSpanStringifyHandlers } from './htmlspan.js'
 import { patchImageBlock } from './imageblock.js'
 import { imageResizePlugins } from './imageresize.js'
 import { blockPlugins, paragraphStringifyHandlers, paragraphJoin } from './blocks.js'
+import { foldPlugin, foldAtCaret, unfoldAtCaret, unfoldAll, revealPos, revealText } from './fold.js'
 import {
   sourceOffset, selectionForOffset, lineTable, scrollForOffset, offsetAtScroll,
 } from './sourcesync.js'
@@ -270,6 +271,7 @@ async function openNow(markdown, baseHref) {
   // blockquote, and empty paragraphs that stay empty rather than becoming
   // `<br />` (see src/blocks.js).
   crepe.editor.use(blockPlugins)
+  crepe.editor.use(foldPlugin)
   // Inline-equation editing, adjacent-equation merging, and keeping money out
   // of equations (see src/latex.js).
   mathPlugins({ isLoading: () => loading }).forEach((p) => crepe.editor.use(p))
@@ -916,6 +918,9 @@ function buildOutline() {
     item.href = '#'
     item.addEventListener('click', (e) => {
       e.preventDefault()
+      // A heading inside a folded section isn't displayed, and an element
+      // that isn't displayed has nowhere to scroll to.
+      try { if (view) revealPos(view, view.posAtDOM(h, 0)) } catch (err) { /* noop */ }
       h.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
     list.appendChild(item)
@@ -1003,11 +1008,29 @@ async function insertImages(srcs, x, y) {
   insertImagesAt(localized, pos)
 }
 
+// --- Folding (see src/fold.js) ---------------------------------------------
+/// The View ▸ Fold commands. Returns whether anything changed.
+function fold(action) {
+  if (!view || sourceVisible) return false
+  const run = { fold: foldAtCaret, unfold: unfoldAtCaret, unfoldAll }[action]
+  if (!run) return false
+  const changed = run(view)
+  view.focus()
+  return changed
+}
+
+/// Called by the host before each find, so a match inside a folded section
+/// is displayed — and so findable — by the time WebKit looks for it.
+function revealFind(query) {
+  if (!view || sourceVisible) return false
+  return revealText(view, query)
+}
+
 window.MW = {
   open, getMarkdown, markSaved, setOutline, toggleOutline, setImageSrc, insertImages,
   toggleMark: toggleTextMark,
   setSource, setBaseURL, primeSpellCheck, nativeReply, mergeInputs, setTextScale,
-  setFontFamily,
+  setFontFamily, fold, revealFind,
   preparePdfExport, finishPdfExport,
   // Test hook: lets the offscreen-WKWebView harness drive the document model
   // directly. Not used by the app itself.

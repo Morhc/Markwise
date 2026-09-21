@@ -28,6 +28,12 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
 - **Styled text** — `<span style="color:red">…</span>`, `<u>` and `<mark>` render
   as what they describe instead of as visible tags, and save back as they were
   written.
+- **Fold sections** — hover a heading for a chevron in the margin; click it to
+  hide everything down to the next heading of the same level (⌥⌘[ folds the
+  section you're in, pressed again it folds the one around it; ⌥⌘] unfolds,
+  ⌥⇧⌘] unfolds everything). Folding only changes the view — the file is never
+  touched, folds reset when the file is reopened, and PDF export prints it all.
+  Typing, find and the outline unfold whatever they need to reach.
 - **See the raw markdown** — ⌘/ swaps the rendered view for an editable source
   view, showing the part of the file you were looking at rather than the top of
   it — whether or not the caret is anywhere near. Edits made there flow back
@@ -137,6 +143,8 @@ Or in Finder: right-click any `.md` → **Get Info** → **Open with: Markwise**
 | Close               | ⌘W       |
 | Find                | ⌘F       |
 | Markdown source     | ⌘/       |
+| Fold / unfold section | ⌥⌘[ / ⌥⌘] |
+| Unfold all          | ⌥⇧⌘]     |
 | Document outline    | ⌥⌘O      |
 | Zoom in / out       | ⌘+ / ⌘−  |
 | Actual size         | ⌘0       |

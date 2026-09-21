@@ -159,6 +159,34 @@
     .milkdown .ProseMirror h4 { font-size: calc(28px * var(--mw-scale, 1)); line-height: calc(36px * var(--mw-scale, 1)); margin-top: calc(20px * var(--mw-scale, 1)); }
     .milkdown .ProseMirror h5 { font-size: calc(24px * var(--mw-scale, 1)); line-height: calc(32px * var(--mw-scale, 1)); margin-top: calc(16px * var(--mw-scale, 1)); }
     .milkdown .ProseMirror h6 { font-size: calc(18px * var(--mw-scale, 1)); line-height: calc(28px * var(--mw-scale, 1)); margin-top: calc(16px * var(--mw-scale, 1)); }
+    /* --- Folding a heading's section (src/fold.js) ------------------------
+       The chevron is the heading's ::after, drawn in the gutter just left of
+       the text, so it adds nothing to the heading's layout and nothing a caret
+       can land in. (::before is taken: it is Crepe's empty-heading
+       placeholder.) It shows on hover, and stays visible while folded so a
+       folded section can be seen to be one. A PDF export prints everything:
+       folding is how you are looking at the file, not what is in it. */
+    .milkdown .editor .mw-fold-heading { position: relative; }
+    .milkdown .editor .mw-fold-heading::after {
+      content: '';
+      position: absolute;
+      /* Crepe's block handle (+ and ⋮⋮) ends 16px left of the text, so the
+         chevron's 16px box starts at -18px: the glyph inside it is drawn in
+         the middle of the box and clears the handle's icon by several px. */
+      left: -18px;
+      top: 0;
+      width: 16px;
+      height: 1lh;
+      background: var(--mw-text);
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 6l4.5 4.5L12.5 6' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 16px 16px no-repeat;
+      opacity: 0;
+      transition: opacity 0.15s, transform 0.15s;
+      cursor: pointer;
+    }
+    .milkdown .editor .mw-fold-heading:hover::after { opacity: 0.45; }
+    .milkdown .editor .mw-fold-closed::after { opacity: 0.45; transform: rotate(-90deg); }
+    html:not(.mw-pdf-export) .milkdown .editor .mw-folded { display: none !important; }
+    html.mw-pdf-export .milkdown .editor .mw-fold-heading::after { display: none; }
     .milkdown .ProseMirror p  { font-size: calc(16px * var(--mw-scale, 1)); line-height: calc(24px * var(--mw-scale, 1)); padding: calc(4px * var(--mw-scale, 1)) 0; }
     /* The list marker sits in a 24x32px box (lining up with a paragraph's 32px
        first line: 24px line-height + 4px padding each side) followed by a 10px

@@ -329,6 +329,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func findPrevious(_ sender: Any?) { activeDocument?.findPrevious() }
     @objc func toggleSuperscript(_ sender: Any?) { activeDocument?.toggleMark("sup") }
     @objc func toggleSubscript(_ sender: Any?) { activeDocument?.toggleMark("sub") }
+    @objc func foldSection(_ sender: Any?) { activeDocument?.fold("fold") }
+    @objc func unfoldSection(_ sender: Any?) { activeDocument?.fold("unfold") }
+    @objc func unfoldAllSections(_ sender: Any?) { activeDocument?.fold("unfoldAll") }
 
     // Disable document actions when there's no open window.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -336,7 +339,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)), #selector(exportPDF(_:)),
              #selector(performFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)):
             return activeDocument != nil
-        case #selector(toggleSuperscript(_:)), #selector(toggleSubscript(_:)):
+        case #selector(toggleSuperscript(_:)), #selector(toggleSubscript(_:)),
+             #selector(foldSection(_:)), #selector(unfoldSection(_:)), #selector(unfoldAllSections(_:)):
             // Formatting applies to the rendered document, not the raw source.
             return activeDocument != nil && !(activeDocument?.sourceVisible ?? false)
         case #selector(reloadFromDisk(_:)), #selector(showInFinder(_:)):
@@ -677,6 +681,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(outline)
         // Raw markdown, editable, on ⌘/.
         viewMenu.addItem(withTitle: "Show Markdown Source", action: #selector(toggleSourceView(_:)), keyEquivalent: "/")
+        viewMenu.addItem(NSMenuItem.separator())
+        // Folding a heading's section, on the keys code editors use for it.
+        // Fold climbs: pressed on a heading that is already folded, it folds
+        // the section around it.
+        let fold = NSMenuItem(title: "Fold Section", action: #selector(foldSection(_:)), keyEquivalent: "[")
+        fold.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(fold)
+        let unfold = NSMenuItem(title: "Unfold Section", action: #selector(unfoldSection(_:)), keyEquivalent: "]")
+        unfold.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(unfold)
+        let unfoldAll = NSMenuItem(title: "Unfold All", action: #selector(unfoldAllSections(_:)), keyEquivalent: "]")
+        unfoldAll.keyEquivalentModifierMask = [.command, .option, .shift]
+        viewMenu.addItem(unfoldAll)
         viewMenu.addItem(NSMenuItem.separator())
 
         // Appearance: follow the system by default, or pin light/dark.
@@ -1213,6 +1230,11 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         webView.evaluateJavaScript("window.MW.setSource(\(sourceVisible))", completionHandler: nil)
     }
 
+    /// Fold or unfold heading sections: "fold", "unfold" or "unfoldAll".
+    func fold(_ action: String) {
+        webView.evaluateJavaScript("window.MW.fold(\(jsString(action)))", completionHandler: nil)
+    }
+
     /// Toggle an inline mark (superscript/subscript) over the selection.
     func toggleMark(_ name: String) {
         webView.evaluateJavaScript("window.MW.toggleMark(\(jsString(name)))", completionHandler: nil)
@@ -1251,8 +1273,13 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         config.caseSensitive = false
         config.wraps = true
         config.backwards = backwards
-        webView.find(query, configuration: config) { [weak self] result in
-            self?.searchField.placeholderString = result.matchFound ? "Find" : "Not found"
+        // WebKit's find skips text that isn't displayed, so a match inside a
+        // folded section could never be found. Unfold the sections holding
+        // one first; the find runs once the page has done that.
+        webView.evaluateJavaScript("window.MW.revealFind(\(jsString(query)))") { [weak self] _, _ in
+            self?.webView.find(query, configuration: config) { result in
+                self?.searchField.placeholderString = result.matchFound ? "Find" : "Not found"
+            }
         }
     }
 
