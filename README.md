@@ -33,6 +33,9 @@ It's a small Swift + WebKit app (a few MB) that hosts the open-source
   (the first press on a new search just finds); All replaces every match as a
   single change, so one ⌘Z puts them all back. Matching ignores case, the same
   as Find, and works in code blocks and the source view too.
+- **Underline** — ⌘U, Format ▸ Underline, or the U in the selection toolbar.
+  Markdown has no underline, so it is saved as `<u>…</u>`, which GitHub, Pandoc
+  and Typora read.
 - **Fold sections** — hover a heading for a chevron in the margin; click it to
   hide everything down to the next heading of the same level (⌥⌘[ folds the
   section you're in, pressed again it folds the one around it; ⌥⌘] unfolds,
@@ -148,6 +151,7 @@ Or in Finder: right-click any `.md` → **Get Info** → **Open with: Markwise**
 | Close               | ⌘W       |
 | Find                | ⌘F       |
 | Find and replace    | ⌥⌘F      |
+| Underline           | ⌘U       |
 | Markdown source     | ⌘/       |
 | Fold / unfold section | ⌥⌘[ / ⌥⌘] |
 | Unfold all          | ⌥⇧⌘]     |

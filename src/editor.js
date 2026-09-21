@@ -5,8 +5,8 @@ import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
 import { $inputRule } from '@milkdown/kit/utils'
 import { InputRule } from '@milkdown/kit/prose/inputrules'
-import { linkSchema } from '@milkdown/kit/preset/commonmark'
-import { editorViewCtx, remarkStringifyOptionsCtx, parserCtx, serializerCtx } from '@milkdown/kit/core'
+import { linkSchema, isMarkSelectedCommand } from '@milkdown/kit/preset/commonmark'
+import { editorViewCtx, commandsCtx, remarkStringifyOptionsCtx, parserCtx, serializerCtx } from '@milkdown/kit/core'
 import { uploadConfig } from '@milkdown/kit/plugin/upload'
 import { blockConfig } from '@milkdown/kit/plugin/block'
 import { codeBlockConfig } from '@milkdown/kit/component/code-block'
@@ -95,6 +95,21 @@ const taskListInputRule = $inputRule(() =>
       .setNodeMarkup(listPos, undefined, { ...node.attrs, checked })
   })
 )
+
+// The toolbar's underline button: the `<u>` mark from src/htmlspan.js, the
+// same one ⌘U toggles. The icon is drawn to match Crepe's own — filled, light,
+// on the same 24px grid and the same 5.4–18.6 vertical extent as B and I.
+const underlineToolbarItem = {
+  icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <path d="M7.4 6.3a.9.9 0 0 1 1.8 0v4.9a2.8 2.8 0 0 0 5.6 0V6.3a.9.9 0 0 1 1.8 0v4.9a4.6 4.6 0 0 1-9.2 0Z"/>
+    <path d="M7.2 17.2h9.6a.7.7 0 0 1 0 1.4H7.2a.7.7 0 0 1 0-1.4Z"/>
+  </svg>`,
+  active: (ctx) => {
+    const type = ctx.get(editorViewCtx).state.schema.marks.mwHtml_u
+    return Boolean(type) && ctx.get(commandsCtx).call(isMarkSelectedCommand.key, type)
+  },
+  onRun: () => toggleTextMark('mwHtml_u'),
+}
 
 let crepe = null
 // The live ProseMirror view (set after each create) — used for image editing.
@@ -249,6 +264,17 @@ async function openNow(markdown, baseHref) {
     root,
     defaultValue: markdown ?? '',
     featureConfigs: {
+      // Underline beside bold and italic, where Word, Pages and Docs put it.
+      // Crepe's builder only appends, so the item is moved into place.
+      [Crepe.Feature.Toolbar]: {
+        buildToolbar: (builder) => {
+          const formatting = builder.getGroup('formatting')
+          formatting.addItem('underline', underlineToolbarItem)
+          const items = formatting.group.items
+          const italic = items.findIndex((item) => item.key === 'italic')
+          if (italic >= 0) items.splice(italic + 1, 0, items.pop())
+        },
+      },
       [Crepe.Feature.CodeMirror]: {
         theme: codeMirrorTheme,
         languages: codeLanguages,

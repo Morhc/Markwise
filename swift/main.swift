@@ -328,6 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func performFindAndReplace(_ sender: Any?) { activeDocument?.showReplace() }
     @objc func findNext(_ sender: Any?) { activeDocument?.findNext() }
     @objc func findPrevious(_ sender: Any?) { activeDocument?.findPrevious() }
+    @objc func toggleUnderline(_ sender: Any?) { activeDocument?.toggleMark("mwHtml_u") }
     @objc func toggleSuperscript(_ sender: Any?) { activeDocument?.toggleMark("sup") }
     @objc func toggleSubscript(_ sender: Any?) { activeDocument?.toggleMark("sub") }
     @objc func foldSection(_ sender: Any?) { activeDocument?.fold("fold") }
@@ -341,7 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
              #selector(performFind(_:)), #selector(performFindAndReplace(_:)),
              #selector(findNext(_:)), #selector(findPrevious(_:)):
             return activeDocument != nil
-        case #selector(toggleSuperscript(_:)), #selector(toggleSubscript(_:)),
+        case #selector(toggleUnderline(_:)), #selector(toggleSuperscript(_:)), #selector(toggleSubscript(_:)),
              #selector(foldSection(_:)), #selector(unfoldSection(_:)), #selector(unfoldAllSections(_:)):
             // Formatting applies to the rendered document, not the raw source.
             return activeDocument != nil && !(activeDocument?.sourceVisible ?? false)
@@ -658,8 +659,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              action: Selector(("toggleAutomaticSpellingCorrection:")), keyEquivalent: "")
         editMenu.addItem(spellingItem)
 
-        // Format menu — markdown has no superscript/subscript syntax, so these
-        // write the HTML tags that GitHub, Pandoc and Typora all understand.
+        // Format menu — markdown has no underline, superscript or subscript
+        // syntax, so these write the HTML tags that GitHub, Pandoc and Typora all understand.
         let formatMenuItem = NSMenuItem()
         mainMenu.addItem(formatMenuItem)
         let formatMenu = NSMenu(title: "Format")
@@ -669,6 +670,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the key handling is done by the monitor in `installFormatKeyMonitor`;
         // this key equivalent is for display. Subscript needs no Shift and
         // matches on its own.
+        // Underline has no markdown syntax either; it is written as `<u>…</u>`,
+        // the mark src/htmlspan.js already reads and writes.
+        formatMenu.addItem(withTitle: "Underline", action: #selector(toggleUnderline(_:)), keyEquivalent: "u")
+        formatMenu.addItem(NSMenuItem.separator())
         let superscript = NSMenuItem(title: "Superscript", action: #selector(toggleSuperscript(_:)), keyEquivalent: "+")
         superscript.keyEquivalentModifierMask = [.command, .control]
         formatMenu.addItem(superscript)
