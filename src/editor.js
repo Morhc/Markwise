@@ -1032,9 +1032,33 @@ async function insertImages(srcs, x, y) {
   if (typeof x === 'number' && typeof y === 'number') {
     const at = view.posAtCoords({ left: x, top: y })
     if (at) pos = at.pos
+    else pos = blankSpaceDropPos(view, y)
   }
   const localized = await Promise.all((srcs || []).map(localizeImageSrc))
   insertImagesAt(localized, pos)
+}
+
+// A drop in blank space — below the document, or right of a short line — hits
+// no text, so posAtCoords reports nothing. Attribute it to the block whose
+// vertical span contains the point (lower half → after it, upper half →
+// before it), else the last block above the point, else the document end.
+function blankSpaceDropPos(view, y) {
+  const blocks = [...view.dom.querySelectorAll(
+    'p,h1,h2,h3,h4,h5,h6,blockquote,li,pre,[data-type=code-block],[data-type=math_block]'
+  )]
+  let above = null
+  let aboveBottom = -Infinity
+  for (const el of blocks) {
+    const r = el.getBoundingClientRect()
+    if (!r.height) continue
+    if (y >= r.top && y <= r.bottom)
+      return view.posAtDOM(el, y - r.top > r.height / 2 ? 1 : -1)
+    if (r.bottom < y && r.bottom > aboveBottom) {
+      aboveBottom = r.bottom
+      above = el
+    }
+  }
+  return above ? view.posAtDOM(above, 1) : view.state.doc.content.size
 }
 
 // --- Folding (see src/fold.js) ---------------------------------------------
