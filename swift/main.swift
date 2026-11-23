@@ -1082,9 +1082,13 @@ final class DocumentWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
             guard !srcs.isEmpty,
                   let jsonData = try? JSONSerialization.data(withJSONObject: srcs),
                   let json = String(data: jsonData, encoding: .utf8) else { return false }
-            // Flip AppKit's bottom-left origin to the web's top-left origin.
+            // WKWebView is a flipped view, so `point` (from
+            // convert(draggingLocation, from: nil)) is already in the web's
+            // top-left origin — no flip needed. Flipping here (the old code)
+            // mirrored every drop vertically: drop on the top half, land in
+            // the bottom half.
             let cssX = point.x
-            let cssY = self.webView.bounds.height - point.y
+            let cssY = point.y
             self.webView.evaluateJavaScript("window.MW.insertImages(\(json), \(cssX), \(cssY))", completionHandler: nil)
             return true
         }
