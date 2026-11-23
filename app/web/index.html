@@ -563,6 +563,12 @@
       --crepe-color-selected: #d5d5d5;
       --crepe-color-inline-area: #cacaca;
     }
+    /* The empty-block placeholder ("Please enter...") is a view hint, but the
+       caret usually sits in one at export time and blurring doesn't clear it —
+       it follows the editor's selection, not its focus — so it would print as
+       if it were content. Same view-only treatment as the fold chevrons: kill
+       the pseudo-element's content and leave the block itself alone. */
+    html.mw-pdf-export .milkdown .crepe-placeholder::before { content: none; }
 
     @media print {
       html, body, #app, .milkdown {
